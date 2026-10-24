@@ -2,7 +2,7 @@
 
 K-Shoot MANIA の譜面（KSON / KSH）をブラウザで再生するビューア。インストール不要で、ページを開いて譜面と音源を選ぶだけで動く。
 
-**公開ページ:** https://watanuki-azuma.github.io/ksm-web-viewer/
+**公開ページ:** https://watanuki-azuma.github.io/KSM-WEB-VIEWER/
 
 ## 使い方
 
