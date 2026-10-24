@@ -31,7 +31,7 @@ npx playwright install chromium
 npm run smoke       # Chromium で実際に開いて再生する
 ```
 
-`v*` タグを push すると `index.html` を添付したリリースが作られる。
+リリースは Actions の release ワークフローを手動実行（version に `v0.1.0` などを指定）すると、タグと `index.html` を添付したリリースが作られる。
 
 ### 譜面の埋め込み
 

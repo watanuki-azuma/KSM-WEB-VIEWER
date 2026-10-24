@@ -1,7 +1,10 @@
 name: release
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: tag to create, e.g. v0.1.0
+        required: true
 permissions:
   contents: write
 jobs:
@@ -9,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: gh release create "$GITHUB_REF_NAME" index.html --title "$GITHUB_REF_NAME" --generate-notes
+      - run: gh release create "$VERSION" index.html --target "$GITHUB_SHA" --title "$VERSION" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
