@@ -20,18 +20,6 @@ K-Shoot MANIA の譜面（KSON / KSH）をブラウザで再生するビュー�
 
 背景・動画・プレイ（判定）は対応していない。
 
-## 更新のしかた
-
-`index.html` は [kshootmania-automatic-edit](https://github.com/watanuki-azuma/kshootmania-automatic-edit) の `src/ksmauto/preview_template.html` から生成している。ビューアを直すときは向こうを直して、次のコマンドで書き出す。
-
-```sh
-cd kshootmania-automatic-edit
-uv run ksmauto viewer -o ../ksm-web-viewer/index.html
-```
-
-## GitHub Pages
-
-Settings → Pages → Build and deployment で Source を「Deploy from a branch」、Branch を `main` / `(root)` にする。`.nojekyll` があるので `index.html` がそのまま配信される。
 
 ## ライセンス
 
