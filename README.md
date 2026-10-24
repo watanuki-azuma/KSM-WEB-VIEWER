@@ -20,6 +20,26 @@ K-Shoot MANIA の譜面（KSON / KSH）をブラウザで再生するビュー�
 
 背景・動画・プレイ（判定）は対応していない。
 
+## 開発
+
+`index.html` 1 ファイルで完結している（外部リソースなし）。テストは Node.js 22 で:
+
+```sh
+npm install
+npm test            # 描画・カメラ・音の単体テスト
+npx playwright install chromium
+npm run smoke       # Chromium で実際に開いて再生する
+```
+
+`v*` タグを push すると `index.html` を添付したリリースが作られる。
+
+### 譜面の埋め込み
+
+[ksmauto](https://github.com/watanuki-azuma/kshootmania-automatic-edit) の `ksmauto preview` は、リリースの `index.html` の次の 3 箇所を書き換えて譜面・音源入りの単体 HTML を作る。変えるときは ksmauto 側も合わせる。
+
+- `<title>Chart viewer</title>`
+- `<script id="chart-data" type="application/json">null</script>` … KSON
+- `const AUDIO_SRC = "";` … 音源の data URL
 
 ## ライセンス
 
