@@ -1,0 +1,1312 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chart viewer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: one screen — chart card on top, playfield in the middle, transport below. A night arcade cabinet, dark only. */
+:root {
+  --bg: #0b0d16; --panel: #141828; --line: #2a3150; --fg: #e8ecf8; --muted: #8b93b3;
+  --bt: #f4f6ff; --fx: #ff9a2e; --laser-l: #2fd3ff; --laser-r: #ff4fb8; --accent: #b9a2ff;
+  --display: "Chakra Petch", "Zen Kaku Gothic New", system-ui, sans-serif;
+  --body: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; margin: 0; }
+.open { font-size: .8rem; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 8px; }
+.open input { max-width: 100%; }
+body.dragging .open { border-color: var(--accent); }
+#open-status { display: block; overflow-wrap: anywhere; }
+#jdg3d { position: absolute; inset: 0; pointer-events: none; }
+[hidden] { display: none !important; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 12px; box-sizing: border-box; display: flex; justify-content: center;
+}
+.app { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 10px; min-height: 0; height: 100%; }
+.card { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: end; }
+.card h1 { margin: 0; font-size: 1.15rem; font-weight: 700; line-height: 1.3; text-wrap: balance; min-width: 0; }
+.card .artist { color: var(--muted); font-size: .85rem; grid-column: 1; }
+.diff { grid-row: 1 / span 2; grid-column: 2; font-family: var(--display); text-align: right; line-height: 1; }
+.diff .name { font-size: .75rem; letter-spacing: .14em; color: var(--accent); }
+.diff .level { font-size: 2.1rem; font-weight: 700; }
+.stage { position: relative; flex: 1 1 auto; min-height: 280px; border-radius: 10px; overflow: hidden; background: #070810; border: 1px solid var(--line); }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+#field3d { position: absolute; inset: 0; background: radial-gradient(120% 70% at 50% 15%, #1d2140, #070810 70%); }
+.hud { position: absolute; inset: 8px 10px auto; display: flex; justify-content: space-between; font-family: var(--display); font-size: .8rem; color: var(--muted); pointer-events: none; font-variant-numeric: tabular-nums; }
+.hud b { color: var(--fg); font-weight: 700; }
+.overlay { position: absolute; inset: 0; display: grid; place-items: center; background: #070810b0; }
+.overlay button { font-size: 1.05rem; padding: 14px 28px; }
+.transport { display: grid; gap: 8px; }
+.seek { position: relative; height: 26px; }
+.seek input { width: 100%; margin: 0; position: absolute; inset: 0; height: 26px; }
+.marks { position: absolute; inset: 0; pointer-events: none; }
+.marks span { position: absolute; top: 0; height: 6px; width: 1px; background: var(--accent); }
+.marks em { position: absolute; top: 18px; font-size: .62rem; font-style: normal; color: var(--muted); transform: translateX(-2px); white-space: nowrap; }
+.row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: .85rem; color: var(--muted); }
+.row label { display: flex; align-items: center; gap: 6px; }
+button, select { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 14px; cursor: pointer; }
+button.primary { background: var(--accent); color: #12101e; border-color: var(--accent); font-weight: 700; font-family: var(--display); letter-spacing: .06em; }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type=range] { accent-color: var(--accent); }
+.time { font-family: var(--display); font-variant-numeric: tabular-nums; color: var(--fg); margin-left: auto; }
+.note { font-size: .72rem; color: var(--muted); margin: 0; }
+</style>
+
+<div class="app">
+  <div class="open" id="open">
+    <label>譜面・音源を開く <input id="files" type="file" multiple accept=".kson,.ksh,.mp3,.ogg,.wav,.m4a,.flac,.opus,.aac"></label>
+    <span id="open-status" role="status">KSON / KSH と音源を選択、またはファイル・フォルダーをドロップ</span>
+  </div>
+  <header class="card">
+    <h1 id="title"></h1>
+    <div class="diff"><div class="name" id="diffname"></div><div class="level" id="level"></div></div>
+    <div class="artist" id="artist"></div>
+  </header>
+  <div class="stage" id="stage">
+    <canvas id="field" aria-label="Chart playfield"></canvas>
+    <canvas id="field3d" aria-label="Chart playfield (3D)" hidden></canvas>
+    <canvas id="jdg3d" aria-label="Judgment line and laser cursors"></canvas>
+    <div class="hud"><span>BPM <b id="bpm">-</b></span><span>m<b id="measure">0</b></span><span>NOTES <b id="total">0</b></span></div>
+    <div class="overlay" id="overlay"><button class="primary" id="start">▶ PLAY</button></div>
+  </div>
+  <div class="transport">
+    <div class="seek"><input id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek"><div class="marks" id="marks"></div></div>
+    <div class="row">
+      <button id="play" class="primary">▶ PLAY</button>
+      <button id="back" title="4 measures back">−4</button>
+      <label>表示 <select id="view"><option value="3d" selected>KSM 風（3D）</option><option value="flat">平面</option></select></label>
+      <label>HI-SPEED <input id="hispeed" type="range" min="3" max="12" step="0.5" value="6.5"></label>
+      <label>速度 <select id="rate"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1.0×</option></select></label>
+      <label><input id="assist" type="checkbox"> アシスト音</label>
+      <label title="レーザー直角のキー音（合成音）"><input id="slam" type="checkbox" checked> 直角音</label>
+      <label title="FX ロング・レーザーのエフェクトと FX のキー音（全部押した場合の近似）"><input id="effects" type="checkbox"> エフェクト</label>
+      <label>表示タイミング <input id="vis" type="range" min="-200" max="200" step="5" value="0"> <output id="vis-out">0ms</output></label>
+      <span id="latency"></span>
+      <span class="time" id="time">0:00</span>
+    </div>
+    <p class="note" id="srcnote"></p>
+    <p class="note">ズレて見えるとき: アシスト音をオンにして、曲と音が合っていれば譜面は正しく、画面の遅れです。「表示タイミング」で合わせてください（+ にするとノーツが遅れて流れます）。</p>
+  </div>
+</div>
+<audio id="audio" preload="auto"></audio>
+
+<script id="fx-worklet" type="text/plain">
+// Audio effects of FX longs and lasers, written from the KSON spec (docs/spec/kson_format.md).
+// Loaded as an AudioWorklet module; the page sends the effect timeline once and its clock every frame.
+// Lengths arrive as measures (>= 0) or as negative seconds.
+const TAU = 2 * Math.PI;
+class Biquad {
+  constructor() { this.c = [1, 0, 0, 0, 0]; this.z = [0, 0, 0, 0]; }
+  set(type, f, q, db = 0) {
+    const w = TAU * Math.min(Math.max(f, 10), sampleRate * 0.45) / sampleRate, cs = Math.cos(w), al = Math.sin(w) / (2 * q), A = Math.pow(10, db / 40);
+    let b0, b1, b2, a0, a2;
+    if (type === 'lp') { b0 = b2 = (1 - cs) / 2; b1 = 1 - cs; a0 = 1 + al; a2 = 1 - al; }
+    else if (type === 'hp') { b0 = b2 = (1 + cs) / 2; b1 = -(1 + cs); a0 = 1 + al; a2 = 1 - al; }
+    else { b0 = 1 + al * A; b1 = -2 * cs; b2 = 1 - al * A; a0 = 1 + al / A; a2 = 1 - al / A; }
+    this.c = [b0 / a0, b1 / a0, b2 / a0, -2 * cs / a0, a2 / a0];
+  }
+  run(x, ch) { const c = this.c, z = this.z, k = ch * 2, y = c[0] * x + z[k]; z[k] = c[1] * x - c[3] * y + z[k + 1]; z[k + 1] = c[2] * x - c[4] * y; return y; }
+}
+// Each effect reads its parameters once per block (OnMin..OnMax by the laser value v; FX longs use v = 0)
+// and then turns one stereo sample into this.l / this.r.
+class Fx {
+  constructor(seg) { this.p = seg.p; this.l = this.r = 0; }
+  get(k, v) { const q = this.p[k]; return q ? q.min + (q.max - q.min) * v : 0; }
+  wet(l, r, wl, wr, mix) { this.l = l + (wl - l) * mix; this.r = r + (wr - r) * mix; }
+}
+class Gate extends Fx {
+  g = 1;
+  block(e) { this.wl = e.len(this.get('wave_length', e.v)); this.rate = this.get('rate', e.v); this.mix = this.get('mix', e.v); this.ms = e.ms; }
+  step(l, r, t) {
+    const on = !(this.wl > 0) || (t - this.ms) % this.wl < this.rate * this.wl;
+    this.g += ((on ? 1 : 0) - this.g) * 0.05;
+    const k = 1 - this.mix + this.mix * this.g; this.l = l * k; this.r = r * k;
+  }
+}
+// retrigger and echo: record from the trigger point and loop the first wave_length of it. Periods
+// count from the measure start, so a note that starts mid-period plays through until the next one.
+class Repeat extends Fx {
+  buf = [new Float32Array(sampleRate * 4), new Float32Array(sampleRate * 4)]; key = null; n = 0; k = 0; period = null; t0 = 0;
+  block(e) {
+    this.wl = e.len(this.get('wave_length', e.v)); this.upd = e.len(this.get('update_period', e.v)); this.mix = this.get('mix', e.v);
+    this.echo = 'feedback_level' in this.p; this.rate = this.echo ? 1 : this.get('rate', e.v); this.fb = this.get('feedback_level', e.v);
+    this.ms = e.ms; this.spc = e.spc;
+  }
+  step(l, r, t) {
+    if (!(this.wl > 0)) { this.l = l; this.r = r; return; }
+    const key = this.upd > 0 ? this.ms + Math.floor((t - this.ms) / this.upd + 1e-9) * this.upd : 0;
+    const period = this.ms + Math.floor((t - this.ms) / this.wl + 1e-9) * this.wl;
+    if (key !== this.key || t < this.t0) { this.key = key; this.t0 = t; this.n = 0; this.k = 0; this.period = period; }
+    if (period !== this.period) { this.period = period; this.k++; }
+    const cap = Math.min(this.buf[0].length, Math.max(1, Math.round(this.wl * this.spc)));
+    if (this.n < cap) { this.buf[0][this.n] = l; this.buf[1][this.n] = r; this.n++; }
+    const ph = Math.max(0, t - period), pos = Math.floor(ph * this.spc);   // the 1e-9 snap can put t a hair before its period
+    if (this.k === 0 || pos >= this.n) { this.l = l; this.r = r; return; }   // still recording the source
+    const g = this.echo ? Math.pow(this.fb, this.k) : ph < this.rate * this.wl ? 1 : 0;
+    this.wet(l, r, this.buf[0][pos] * g, this.buf[1][pos] * g, this.mix);
+  }
+}
+class Bitcrusher extends Fx {
+  c = 0; hl = 0; hr = 0;
+  block(e) { this.n = this.get('reduction', e.v) * sampleRate / 44100; this.mix = this.get('mix', e.v); }
+  step(l, r) { if (++this.c >= this.n) { this.c = 0; this.hl = l; this.hr = r; } this.wet(l, r, this.hl, this.hr, this.mix); }
+}
+class Flanger extends Fx {
+  d = [new Float32Array(8192), new Float32Array(8192)]; w = 0;
+  block(e) {
+    this.per = e.len(this.get('period', e.v)); this.dl = this.get('delay', e.v) * sampleRate / 44100; this.dp = this.get('depth', e.v) * sampleRate / 44100;
+    this.fb = this.get('feedback', e.v); this.sw = this.get('stereo_width', e.v); this.vol = 'vol' in this.p ? this.get('vol', e.v) : 0.75; this.mix = this.get('mix', e.v);
+  }
+  tap(ch, x, t, off) {
+    const lfo = this.per > 0 ? 0.5 - 0.5 * Math.cos(TAU * (t / this.per + off)) : 0.5, buf = this.d[ch];
+    const p = this.w - this.dl - this.dp * lfo, i = Math.floor(p), f = p - i, y = buf[i & 8191] * (1 - f) + buf[(i + 1) & 8191] * f;
+    buf[this.w & 8191] = x + y * this.fb;
+    return (x + y * this.vol) / (1 + this.vol);
+  }
+  step(l, r, t) { const wl = this.tap(0, l, t, 0), wr = this.tap(1, r, t, this.sw / 2); this.w++; this.wet(l, r, wl, wr, this.mix); }
+}
+class Phaser extends Fx {
+  z = new Float32Array(24); last = [0, 0]; a = [0, 0];
+  block(e) {
+    const per = e.len(this.get('period', e.v)), f1 = this.get('freq_1', e.v), f2 = this.get('freq_2', e.v), sw = this.get('stereo_width', e.v);
+    this.n = Math.min(12, Math.round(this.get('stage', e.v))); this.fb = this.get('feedback', e.v); this.mix = Math.min(1, 2 * this.get('mix', e.v));
+    for (let ch = 0; ch < 2; ch++) {
+      const lfo = per > 0 ? 0.5 - 0.5 * Math.cos(TAU * (e.t / per + ch * sw / 2)) : 0.5;
+      const tn = Math.tan(Math.PI * Math.min(f1 * Math.pow(f2 / f1, lfo), sampleRate * 0.45) / sampleRate);
+      this.a[ch] = (tn - 1) / (tn + 1);
+    }
+  }
+  ap(ch, x) {
+    let y = x + this.last[ch] * this.fb; const a = this.a[ch];
+    for (let s = 0; s < this.n; s++) { const k = ch * 12 + s, o = a * y + this.z[k]; this.z[k] = y - a * o; y = o; }
+    return this.last[ch] = y;
+  }
+  step(l, r) { const al = this.ap(0, l), ar = this.ap(1, r); this.l = l * (1 - this.mix / 2) + al * this.mix / 2; this.r = r * (1 - this.mix / 2) + ar * this.mix / 2; }
+}
+class Wobble extends Fx {
+  f = new Biquad();
+  block(e) {
+    const wl = e.len(this.get('wave_length', e.v)); this.mix = wl > 0 ? this.get('mix', e.v) : 0;
+    if (!(wl > 0)) return;
+    const lfo = 0.5 - 0.5 * Math.cos(TAU * ((e.t - e.ms) % wl) / wl), f1 = this.get('freq_1', e.v), f2 = this.get('freq_2', e.v);
+    this.f.set('lp', f1 * Math.pow(f2 / f1, lfo), this.get('q', e.v));
+  }
+  step(l, r) { this.wet(l, r, this.f.run(l, 0), this.f.run(r, 1), this.mix); }
+}
+// Slows the recorded audio from the note start down to a stop.
+class Tapestop extends Fx {
+  buf = [new Float32Array(sampleRate * 8), new Float32Array(sampleRate * 8)]; w = 0; rp = 0; sp = 1;
+  block(e) { this.mix = this.get('trigger', e.v) > 0.5 ? this.get('mix', e.v) : 0; this.fall = Math.max(0.05, this.get('speed', e.v)) / (0.3 * sampleRate); }
+  step(l, r) {
+    if (this.w < this.buf[0].length) { this.buf[0][this.w] = l; this.buf[1][this.w] = r; this.w++; }
+    this.sp = Math.max(0, this.sp - this.fall); this.rp = Math.min(this.rp + this.sp, this.w - 1);
+    const i = Math.floor(this.rp), f = this.rp - i, j = Math.min(i + 1, this.w - 1), g = Math.min(1, this.sp * 4);
+    this.wet(l, r, (this.buf[0][i] * (1 - f) + this.buf[0][j] * f) * g, (this.buf[1][i] * (1 - f) + this.buf[1][j] * f) * g, this.mix);
+  }
+}
+class Sidechain extends Fx {
+  block(e) {
+    this.per = e.len(this.get('period', e.v)); this.a = e.len(this.get('attack_time', e.v)); this.h = e.len(this.get('hold_time', e.v));
+    this.rl = e.len(this.get('release_time', e.v)); this.lo = 1 / Math.max(1, this.get('ratio', e.v)); this.ms = e.ms;
+  }
+  step(l, r, t) {
+    let g = 1;
+    if (this.per > 0) {
+      const ph = (t - this.ms) % this.per, lo = this.lo;
+      if (ph < this.a) g = 1 + (lo - 1) * ph / this.a;
+      else if (ph < this.a + this.h) g = lo;
+      else if (ph < this.a + this.h + this.rl) g = lo + (1 - lo) * (ph - this.a - this.h) / this.rl;
+    }
+    this.l = l * g; this.r = r * g;
+  }
+}
+// Two crossfaded read heads sliding through a delay line.
+class PitchShift extends Fx {
+  d = [new Float32Array(16384), new Float32Array(16384)]; w = 0; ph = 0;
+  block(e) { this.ratio = Math.pow(2, this.get('pitch', e.v) / 12); this.W = Math.min(8000, Math.max(64, this.get('chunk_size', e.v) * sampleRate / 44100)); this.mix = this.get('mix', e.v); }
+  read(buf, d) { const p = this.w - d, i = Math.floor(p), f = p - i; return buf[i & 16383] * (1 - f) + buf[(i + 1) & 16383] * f; }
+  step(l, r) {
+    this.d[0][this.w & 16383] = l; this.d[1][this.w & 16383] = r;
+    this.ph = (this.ph + (1 - this.ratio) / this.W + 1) % 1;
+    const p2 = (this.ph + 0.5) % 1, g1 = 1 - Math.abs(2 * this.ph - 1), d1 = this.ph * this.W + 1, d2 = p2 * this.W + 1;
+    this.wet(l, r, this.read(this.d[0], d1) * g1 + this.read(this.d[0], d2) * (1 - g1), this.read(this.d[1], d1) * g1 + this.read(this.d[1], d2) * (1 - g1), this.mix);
+    this.w++;
+  }
+}
+// Laser filters: v sweeps the cutoff on a log scale.
+class Filter extends Fx {
+  f = new Biquad();
+  block(e) {
+    const v = this.get('v', e.v); this.mix = this.get('mix', e.v); this.k = 1;
+    if (this.type === 'peak') {
+      const db = 15 * this.get('gain', e.v) / 0.5 * Math.min(1, v / 0.15) * (1 - 0.45 * Math.max(0, v - 0.15) / 0.85);
+      this.f.set('peak', 50 * Math.pow(180, v), 1.2, db); this.k = 1 / (1 + db / 24);
+    } else if (this.type === 'hp') this.f.set('hp', 100 * Math.pow(22, v), 'q' in this.p ? this.get('q', e.v) : 2);
+    else this.f.set('lp', 15000 * Math.pow(800 / 15000, v), 'q' in this.p ? this.get('q', e.v) : 2);
+  }
+  step(l, r) { this.wet(l, r, this.f.run(l, 0) * this.k, this.f.run(r, 1) * this.k, this.mix); }
+}
+const filter = type => class extends Filter { type = type; };
+const EFFECTS = {
+  retrigger: Repeat, echo: Repeat, gate: Gate, flanger: Flanger, pitch_shift: PitchShift, bitcrusher: Bitcrusher, phaser: Phaser,
+  wobble: Wobble, tapestop: Tapestop, sidechain: Sidechain,
+  peaking_filter: filter('peak'), high_pass_filter: filter('hp'), low_pass_filter: filter('lp'),
+};
+const last = (list, t) => { let x = null; for (const e of list) { if (e[0] > t) break; x = e; } return x; };
+
+class KsmEffects extends AudioWorkletProcessor {
+  constructor() {
+    super(); this.data = null; this.clock = null; this.reset();
+    this.port.onmessage = e => {
+      if (e.data.type === 'data') this.data = e.data;
+      else if (e.data.type === 'reset') this.reset();   // seek: recordings and delay lines belong to the old position
+      else this.clock = e.data;
+    };
+  }
+  reset() { this.stages = [{amt: 0}, {amt: 0}, {amt: 0, v: 0}]; }
+  // One effect slot: a new segment gets a fresh effect; a finished one fades out before it is dropped.
+  stage(s, seg, active, env) {
+    if (seg && seg !== s.seg && EFFECTS[seg.type]) { s.seg = seg; s.fx = new EFFECTS[seg.type](seg); }
+    s.target = active && seg === s.seg ? 1 : 0;
+    if (!s.fx || (!s.target && s.amt < 1e-4)) { s.amt = 0; return null; }
+    s.fx.block(env); return s;
+  }
+  laserValue(t) {
+    let v = -1;
+    for (const l of this.data.lasers) {
+      const p = l.pts; if (t < p[0].t || t > p[p.length - 1].t + 0.05) continue;
+      let x = p[p.length - 1].b;
+      for (let i = 0; i + 1 < p.length; i++) if (p[i].t <= t && t < p[i + 1].t) { x = p[i].b + (p[i + 1].a - p[i].b) * (t - p[i].t) / (p[i + 1].t - p[i].t); break; }
+      v = Math.max(v, l.side ? 1 - x : x);
+    }
+    return v;
+  }
+  process(inputs, outputs) {
+    const inp = inputs[0], out = outputs[0], n = out[0].length, c = this.clock, d = this.data;
+    const L = inp[0], R = inp[1] || inp[0];
+    if (!L) { out.forEach(ch => ch.fill(0)); return true; }
+    if (!d || !c || !c.on) { out[0].set(L); out[1].set(R); this.reset(); return true; }
+    const t0 = c.chart + (currentTime - c.ctx) * c.rate, dt = c.rate / sampleRate;
+    const bpm = last(d.bpms, t0)?.[1] || d.bpms[0][1], ms = last(d.measures, t0)?.[0] ?? 0;
+    const env = {t: t0, ms, v: 0, spc: sampleRate / c.rate, len: x => x >= 0 ? x * 240 / bpm : -x};
+    const active = [];
+    for (let lane = 0; lane < 2; lane++) {
+      const seg = d.fx[lane].find(s => s.t0 <= t0 && t0 < s.t1) || null;
+      const s = this.stage(this.stages[lane], seg, !!seg, env); if (s) active.push(s);
+    }
+    const lv = this.laserValue(t0), ls = this.stages[2];
+    if (lv >= 0) ls.v += (lv - ls.v) * 0.3;
+    const s = this.stage(ls, last(d.laserFx, t0)?.[1] || null, lv >= 0, {...env, v: ls.v}); if (s) active.push(s);
+    for (let i = 0; i < n; i++) {
+      let l = L[i], r = R[i]; const t = t0 + i * dt;
+      for (const s of active) {
+        s.amt += (s.target - s.amt) * (s.target ? 0.005 : s === ls ? 0.0005 : 0.005);
+        s.fx.step(l, r, t); l += (s.fx.l - l) * s.amt; r += (s.fx.r - r) * s.amt;
+      }
+      out[0][i] = l; out[1][i] = r;
+    }
+    return true;
+  }
+}
+registerProcessor('ksm-effects', KsmEffects);
+</script>
+<script id="ksh-converter">
+// Browser port of src/ksmauto/ksh.py; keep conversion conventions in sync.
+function parseKsh(text) {
+  const dict = value => Object.assign(Object.create(null), value);
+  const effectTypes = dict(Object.fromEntries(['Retrigger','Gate','Flanger','PitchShift','BitCrusher','Phaser','Wobble','TapeStop','Echo','SideChain','SwitchAudio','HighPassFilter','LowPassFilter','PeakingFilter'].map((k,i) => [k, ['retrigger','gate','flanger','pitch_shift','bitcrusher','phaser','wobble','tapestop','echo','sidechain','switch_audio','high_pass_filter','low_pass_filter','peaking_filter'][i]])));
+  const fxNames = dict(Object.fromEntries(Object.entries(effectTypes).slice(0, 10)));
+  const filterNames = dict({peak:'peaking_filter', hpf1:'high_pass_filter', lpf1:'low_pass_filter', bitc:'bitcrusher', fx:'fx', 'fx;bitc':'fx;bitcrusher'});
+  const paramNames = {attackTime:'attack_time', bandwidth:'bandwidth', chunkSize:'chunk_size', delay:'delay', depth:'depth', feedback:'feedback', feedbackLevel:'feedback_level', fileName:'filename', freq:'freq', freqMax:'freq_max', gain:'gain', hiCutGain:'hi_cut_gain', hiFreq:'freq_2', holdTime:'hold_time', loFreq:'freq_1', mix:'mix', overWrap:'overlap', period:'period', pitch:'pitch', Q:'q', rate:'rate', ratio:'ratio', reduction:'reduction', releaseTime:'release_time', speed:'speed', stage:'stage', stereoWidth:'stereo_width', trigger:'trigger', updateTrigger:'update_trigger', v:'v', volume:'vol', waveLength:'wave_length', updatePeriod:'update_period'};
+  const legacyFx = Object.fromEntries([...'SVTWUGHKILJFPBQXAD'].map((k,i) => [k, ['Retrigger;8','Retrigger;12','Retrigger;16','Retrigger;24','Retrigger;32','Gate;4','Gate;8','Gate;12','Gate;16','Gate;24','Gate;32','Flanger','PitchShift;12','BitCrusher;5','Phaser','Wobble;12','TapeStop','SideChain'][i]]));
+  const tiltsAllowed = ['normal','bigger','biggest','keep_normal','keep_bigger','keep_biggest','zero'];
+  const number = (s, fallback = 0, integer = true) => { const m = String(s).match(integer ? /^\s*[+-]?\d+/ : /^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)/); const n = m ? Number(m[0]) : fallback; return Number.isFinite(n) ? n : fallback; };
+  const round = v => Math.sign(v) * Math.floor(Math.abs(v) * 1000 + 0.5) / 1000;
+  const pairs = obj => Object.entries(obj).map(([y,v]) => [+y,v]).sort((a,b) => a[0]-b[0]);
+  const put = (obj,y,v,graph = false) => { obj[y] = graph && Object.hasOwn(obj,y) ? [Array.isArray(obj[y]) ? obj[y][0] : obj[y], v] : v; };
+  const split = (s, sep) => { const i = s.indexOf(sep); return [s.slice(0,i),s.slice(i+sep.length)]; };
+  const timeSig = v => { const p = split(v,'/'); if (!v.includes('/') || p.some(s => number(s) <= 0)) throw Error('Invalid KSH time signature: ' + v); return p.map(s => number(s)); };
+  const lines = text.replace(/^\uFEFF/,'').split('\n').map(l => l.replace(/\r$/,'')), end = lines.indexOf('--');
+  if (end < 0) throw Error("KSH header must end with '--'");
+  const header = Object.create(null), comments = [], unknownLines = [];
+  for (const l of lines.slice(0,end)) {
+    if (l.startsWith('//')) comments.push([0,l.slice(2).replaceAll('\\n','\n')]);
+    else if (l.includes('=') && !l.startsWith('=')) { const [k,v] = split(l,'='); header[k] = v; }
+    else unknownLines.push([0,l]);
+  }
+  if (!Object.hasOwn(header,'title')) throw Error('KSH requires a title header');
+  const pop = (k, d = '') => { const v = Object.hasOwn(header,k) ? header[k] : d; delete header[k]; return v; };
+  let version = pop('ver','100'); version = pop('ver_compat') || version;
+  const ver = number(version,100);
+  const meta = {title:pop('title'), artist:pop('artist'), chart_author:pop('effect'), level:Math.max(1,Math.min(20,number(pop('level','1'))))};
+  for (const [k,v] of [['title_translit','title_translit'],['title_img','title_img_filename'],['artist_translit','artist_translit'],['artist_img','artist_img_filename'],['jacket','jacket_filename'],['illustrator','jacket_author'],['icon','icon_filename'],['information','information']]) { const s = pop(k); if (s) meta[v] = s; }
+  const difficulty = pop('difficulty','infinite'); meta.difficulty = dict({light:0,challenge:1,extended:2,infinite:3})[difficulty] ?? difficulty;
+  meta.disp_bpm = pop('t'); const stdBpm = number(pop('to','0'),0,false); if (stdBpm) meta.std_bpm = stdBpm;
+  const bpm = {}, stops = {}, scroll = {};
+  const insertBpm = (y,v) => { if (!v.includes('-')) { const n = round(number(v,0,false)); bpm[y] = ver >= 130 ? Math.min(n,65535) : n; } };
+  if (meta.disp_bpm) insertBpm(0,meta.disp_bpm);
+  let sig = timeSig(pop('beat','4/4')); const signatures = {0:sig};
+  const music = pop('m').split(';').slice(0,4);
+  const bgm = {filename:music[0], vol:number(pop('mvol','100') || '100')/100*(ver === 100 ? 0.6 : 1), offset:number(pop('o','0')), preview:{offset:number(pop('po','0')),duration:number(pop('plength','0'))}};
+  if (music.length > 1) bgm.legacy = {fp_filenames:music.slice(1)};
+  const effects = {fx:{def:[],param_change:dict(),long_event:dict()},laser:{def:[],param_change:dict(),pulse_event:dict(),peaking_filter_delay:number(pop('pfilterdelay','40') || '40')}};
+  const gain = Object.hasOwn(header,'pfiltergain') ? {0:number(pop('pfiltergain'),50)/100} : {};
+  const slamVol = {0:number(pop('chokkakuvol','50') || '50')/100};
+  const keyLaser = {legacy:{vol_auto:number(pop('chokkakuautovol','1') || '1') !== 0},slam_event:dict()}, keyFx = dict();
+  function filtertype(y,v) {
+    const name = filterNames[v] ?? v, defs = effects.laser.def;
+    if (['fx','fx;bitcrusher'].includes(name) && !defs.some(d => d[0] === name)) {
+      if (name === 'fx' && !music[1]) return;
+      defs.push([name,name === 'fx' ? {type:'switch_audio',v:{filename:music[1]}} : {type:'bitcrusher'}]);
+    }
+    const events = effects.laser.pulse_event[name] ||= []; if (!events.includes(y)) events.push(y);
+  }
+  if (Object.hasOwn(header,'filtertype')) filtertype(0,pop('filtertype'));
+  const backgrounds = pop('bg','desert').split(';').slice(0,2); if (backgrounds.length === 2 && backgrounds[0] === backgrounds[1]) backgrounds.pop();
+  const layer = pop('layer','arrow').split(ver >= 166 ? ';' : '/'), flags = layer.length > 2 ? number(layer[2],3) : 3;
+  const bg = {legacy:{bg:backgrounds.map(filename => ({filename})),layer:{filename:layer[0],duration:layer.length > 1 ? number(layer[1]) : 0,rotation:{tilt:!!(flags&1),spin:!!(flags&2)}}}};
+  const movie = pop('v'), movieOffset = number(pop('vo','0')); if (movie || movieOffset) bg.legacy.movie = {filename:movie,offset:movieOffset};
+  const total = number(pop('total','0')), unknown = {meta:header,option:dict(),line:unknownLines};
+  const notes = {bt:[[],[],[],[]],fx:[[],[]],laser:[[],[]]}, active = {bt:[null,null,null,null],fx:[null,null],laser:[null,null]};
+  const body = {}, tilts = {}, patterns = dict(), curves = dict(); let legacyTilt = false;
+  function flushButton(kind,lane) { const s = active[kind][lane]; if (s) { notes[kind][lane].push([s.y,Math.trunc(s.length)]); active[kind][lane] = null; } }
+  function flushLaser(lane) {
+    const s = active.laser[lane]; active.laser[lane] = null; if (!s || s.points.length < 2) return;
+    const p = s.points, converted = [];
+    for (let i = 0; i < p.length; i++) {
+      const [y,v] = p[i];
+      if (i+1 < p.length && p[i+1][0]-y <= 30 && p[i+1][1] !== v) {
+        converted.push([y,[v,p[i+1][1]]]);
+        if (i+2 === p.length || p[i+2][0]-p[i+1][0] > 30 || p[i+2][1] === p[i+1][1]) i++;
+      } else converted.push([y,v]);
+    }
+    notes.laser[lane].push(s.wide ? [s.y,converted,2] : [s.y,converted]);
+  }
+  function fxEvent(lane,y,e,param) {
+    const f = e.split(';'), name = fxNames[f[0]] ?? f[0];
+    (effects.fx.long_event[name] ||= [[],[]])[lane].push([y,[param ? number(param) : f.length > 1 ? number(f[1]) : null, f.length > 2 ? number(f[2]) : null]]);
+  }
+  let chartLines = [], options = [], annotations = [], pulse = 0, measure = 0;
+  for (const l of lines.slice(end+1)) {
+    if (!l) continue;
+    if (l.startsWith('//')) annotations.push([chartLines.length,true,l.slice(2).replaceAll('\\n','\n')]);
+    else if (l.startsWith('#')) {
+      const m = l.match(/^#define_(fx|filter) +([^ ]+) +(.*?) *$/); if (!m) continue;
+      const kind = m[1] === 'fx' ? 'fx' : 'laser', params = dict();
+      for (const f of m[3].split(';')) if (f.includes('=')) { const [k,v] = split(f,'='); if (v && !Object.hasOwn(params,k)) params[k] = v; }
+      const type = effectTypes[params.type]; delete params.type; if (!type) continue;
+      const name = (kind === 'fx' ? fxNames : filterNames)[m[2]] ?? m[2];
+      const def = {type,v:Object.fromEntries(Object.entries(params).filter(([k]) => Object.hasOwn(paramNames,k)).map(([k,v]) => [paramNames[k],v]))};
+      const existing = effects[kind].def.find(d => d[0] === name); if (existing) existing[1] = def; else effects[kind].def.push([name,def]);
+    } else if (l.includes('|')) chartLines.push(l);
+    else if (l.includes('=') && !l.startsWith('=')) { const [k,v] = split(l,'='); if (k === 'beat') { sig = timeSig(v); signatures[measure] = sig; } else options.push([chartLines.length,k,v]); }
+    else if (l !== '--') annotations.push([chartLines.length,false,l]);
+    else {
+      const length = Math.floor(960*sig[0]/sig[1]);
+      if (chartLines.length) {
+        const step = length/chartLines.length, local = new Map(), localKey = (idx,k) => idx+','+k;
+        for (const [idx,k,v] of options) {
+          const y = pulse+Math.trunc(idx*step);
+          if (k.endsWith('_curve')) { if (v.includes(';')) (curves[k.slice(0,-6)] ||= {})[y] = split(v,';').map(s => number(s,0,false)); }
+          else if (k === 't') insertBpm(Object.keys(bpm).length ? y : 0,v);
+          else if (k === 'stop') { if (number(v) > 0) stops[y] = number(v)*5; }
+          else if (['zoom_top','zoom_bottom','zoom_side','center_split','rotation_deg','scroll_speed'].includes(k)) {
+            const legacy = ver < 167 && k.startsWith('zoom_'), limit = legacy ? 300 : 65535;
+            const value = number(legacy ? v.slice(0,4) : v,0,!['rotation_deg','scroll_speed'].includes(k)), graph = k === 'scroll_speed' ? scroll : body[k] ||= {};
+            if (k === 'scroll_speed' || Math.abs(value) <= limit || legacy && Object.hasOwn(graph,y)) put(graph,y,value,true);
+          } else if (k === 'tilt') {
+            let value;
+            if (/^[\d-]/.test(v)) { value = round(number(v,0,false)); if (ver < 170 && Math.abs(value) >= 10) legacyTilt = true; if (Math.abs(value) > 1000) continue; }
+            else { value = dict({big:'bigger',keep:'keep_bigger'})[v] ?? v; if (!tiltsAllowed.includes(value)) value = 'normal'; }
+            put(tilts,y,value,Object.hasOwn(tilts,y) && typeof tilts[y] !== 'string');
+          } else if (k === 'chokkakuvol') slamVol[y] = number(v)/100;
+          else if (k === 'pfiltergain') gain[y] ??= number(v,50)/100;
+          else if (k === 'filtertype') filtertype(y,v);
+          else if (['fx-l','fx-r','fx-l_param1','fx-r_param1','fx-l_se','fx-r_se','laserrange_l','laserrange_r','chokkakuse'].includes(k)) local.set(localKey(idx,k),v);
+          else if (k.startsWith('fx:') || k.startsWith('filter:')) {
+            const f = k.split(':'); if (f.length >= 3 && f[1] && Object.hasOwn(paramNames,f[2])) {
+              const kind = f[0] === 'fx' ? 'fx' : 'laser', name = (kind === 'fx' ? fxNames : filterNames)[f[1]] ?? f[1];
+              ((effects[kind].param_change[name] ||= dict())[paramNames[f[2]]] ||= {})[y] = v;
+            }
+          } else (unknown.option[k] ||= []).push([y,v]);
+        }
+        for (const [idx,line] of chartLines.entries()) {
+          const y = pulse+Math.trunc(idx*step), blocks = line.split('|');
+          for (const [kind,block,count] of [['bt',blocks[0],4],['fx',blocks[1],2]]) {
+            for (const [lane,char] of [...block.slice(0,count)].entries()) {
+              let state = active[kind][lane]; const [chip,long] = kind === 'bt' ? ['1','2'] : ['2','1'];
+              if (char === chip) {
+                if (kind === 'bt') flushButton(kind,lane); notes[kind][lane].push(y);
+                if (kind === 'fx') { const sound = local.get(localKey(idx,lane === 0 ? 'fx-l_se' : 'fx-r_se')); if (sound !== undefined) { const f = sound.split(';'); (keyFx[f[0]] ||= [[],[]])[lane].push([y,{vol:f.length > 1 ? number(f[1],100)/100 : 1}]); } }
+              } else if (char === long || kind === 'fx' && char !== '0') {
+                if (!state) state = active[kind][lane] = {y,length:0,effect:null,param:'',legacy:false}; state.length += step;
+                if (kind === 'fx') {
+                  const key = lane === 0 ? 'fx-l' : 'fx-r'; let param = local.get(localKey(idx,key+'_param1')) ?? (char !== '1' ? state.param : '');
+                  let effect = char === '1' ? local.get(localKey(idx,key)) : legacyFx[char] ?? '';
+                  if (char === '1' && effect === undefined && state.legacy) { effect = ''; param = ''; }
+                  if (effect !== undefined) { if (char === '1' || effect !== state.effect || param !== state.param) fxEvent(lane,y,effect,param); Object.assign(state,{effect,param,legacy:char !== '1'}); }
+                }
+              } else flushButton(kind,lane);
+            }
+          }
+          const laser = blocks[2] || '';
+          for (const [lane,char] of [...laser.slice(0,2)].entries()) {
+            if (char === '-') flushLaser(lane);
+            else if (char !== ':') {
+              const state = active.laser[lane] ||= {y,wide:local.get(localKey(idx,lane === 0 ? 'laserrange_l' : 'laserrange_r')) === '2x',points:[]};
+              let value = Math.max('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmno'.indexOf(char),0)/50;
+              if (state.wide && 'Cb'.includes(char)) value = char === 'C' ? 0.25 : 0.75;
+              state.points.push([y-state.y,value]); const sound = local.get(localKey(idx,'chokkakuse'));
+              if (sound) { const events = keyLaser.slam_event[sound] ||= []; if (!events.includes(y)) events.push(y); }
+            }
+          }
+          const spin = laser.slice(2).match(/^([@S])([()<>])(.+)/);
+          if (spin) {
+            const [,marker,dir,params] = spin; if (marker === 'S' && !'<>'.includes(dir)) continue;
+            const fields = params.split(';'), name = marker === 'S' ? 'swing' : '()'.includes(dir) ? 'spin' : 'half_spin';
+            const event = [y,'(<'.includes(dir) ? -1 : 1,number(fields[0])*5];
+            if (name === 'swing') { const defaults = ['192','250','3','2']; defaults.splice(0,Math.min(fields.length,4),...fields.slice(0,4)); event.push(Object.fromEntries(['scale','repeat','decay_order'].map((k,i) => [k,number(defaults[i+1])]))); }
+            (patterns[name] ||= []).push(event);
+          }
+        }
+        for (const [idx,comment,value] of annotations) (comment ? comments : unknownLines).push([pulse+Math.trunc(idx*step),value]);
+      }
+      chartLines = []; options = []; annotations = []; pulse += length; measure++;
+    }
+  }
+  for (let lane = 0; lane < 2; lane++) flushLaser(lane);
+  for (const kind of ['bt','fx']) for (const lane of notes[kind]) {
+    const byPulse = new Map(); for (const n of lane) { const y = Array.isArray(n) ? n[0] : n; if (!byPulse.has(y)) byPulse.set(y,n); }
+    lane.splice(0,lane.length,...[...byPulse].sort((a,b) => a[0]-b[0]).map(e => e[1]));
+  }
+  for (const [name,lanes] of Object.entries(effects.fx.long_event)) {
+    const type = effects.fx.def.find(d => d[0] === name)?.[1].type ?? name;
+    for (const lane of lanes) for (const event of lane) {
+      let [p1,p2] = event[1];
+      if (p1 === null || p1 === -99999) p1 = {retrigger:8,gate:4,wobble:12,pitch_shift:12,bitcrusher:5,tapestop:50,echo:4}[type] ?? 0;
+      if (p2 === null || p2 === -99999) p2 = type === 'echo' ? 60 : 0;
+      const params = {}; if (['retrigger','gate','wobble','echo'].includes(type) && p1 > 0) params.wave_length = '1/'+p1;
+      if (type === 'pitch_shift') params.pitch = String(p1);
+      if (type === 'bitcrusher') params.reduction = p1+'samples';
+      if (type === 'tapestop') params.speed = p1+'%';
+      if (type === 'echo') params.feedback_level = p2+'%'; event[1] = params;
+    }
+  }
+  if (legacyTilt) for (const [y,v] of Object.entries(tilts)) tilts[y] = typeof v === 'number' ? round(v*1.4) : Array.isArray(v) ? v.map(n => typeof n === 'number' ? round(n*1.4) : n) : v;
+  tilts[0] ??= 'normal'; scroll[0] ??= 1; gain[0] ??= 0.5;
+  const graphPoints = (name,graph) => pairs(graph).map(p => Object.hasOwn(curves[name] || {},p[0]) ? [...p,curves[name][p[0]]] : p);
+  notes.laser.forEach((lane,i) => lane.forEach(([y,points]) => points.forEach(p => { const curve = curves[i === 0 ? 'laser_l' : 'laser_r']?.[y+p[0]]; if (curve) p.push(curve); })));
+  const tiltEvents = pairs(tilts); for (const event of tiltEvents) { const curve = curves.tilt?.[event[0]]; if (curve && typeof event[1] !== 'string') event[1] = [event[1],curve]; }
+  for (const effect of Object.values(effects)) for (const changes of Object.values(effect.param_change)) for (const [k,v] of Object.entries(changes)) changes[k] = pairs(v);
+  effects.laser.legacy = {filter_gain:pairs(gain)}; keyLaser.vol = pairs(slamVol);
+  const chart = {format_version:1,meta,beat:{bpm:pairs(bpm),time_sig:pairs(signatures),scroll_speed:graphPoints('scroll_speed',scroll),stop:pairs(stops)},gauge:{total},note:notes,audio:{bgm,key_sound:{fx:{chip_event:keyFx},laser:keyLaser},audio_effect:effects},camera:{tilt:tiltEvents,cam:{body:Object.fromEntries(Object.entries(body).map(([k,v]) => [k,graphPoints(k,v)])),pattern:{laser:{slam_event:patterns}}}},bg,compat:{ksh_unknown:unknown}};
+  if (ver < 200) chart.compat.ksh_version = version;
+  if (comments.length) chart.editor = {comment:comments.sort((a,b) => a[0]-b[0])};
+  return chart;
+}
+</script>
+<script id="viewer-core">
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const approach = (v, target, step) => v < target ? Math.min(v + step, target) : Math.max(v - step, target);
+// after kshootmania/src/MusicGame/Camera/HighwayTiltAuto.cpp (ksm-v2, MIT); graph math after libkson/src/Util/GraphCurve.cpp (MIT).
+function curveAt(curve, x) {
+  if (!curve || curve[0] === curve[1]) return x;
+  const a = clamp(curve[0], 0, 1), b = clamp(curve[1], 0, 1); x = clamp(x, 0, 1);
+  const root = Math.sqrt(Math.max(0, a * a + x - 2 * a * x));
+  const t = a < 0.25 ? (a - root) / (2 * a - 1) : x / (a + root);
+  return clamp(2 * (1 - t) * t * b + t * t, 0, 1);
+}
+const graphPair = v => Array.isArray(v) ? v : [v, v];
+function pointIndex(graph, y) {
+  let lo = 0, hi = graph.length;
+  while (lo < hi) { const mid = (lo + hi) >>> 1; if (graph[mid][0] <= y) lo = mid + 1; else hi = mid; }
+  return lo - 1;
+}
+function graphAt(graph, y, fallback = 0, before = false) {
+  if (!graph?.length) return fallback;
+  const i = pointIndex(graph, y), p = graph[Math.max(0, i)], [v, vf] = graphPair(p[1]);
+  if (i < 0 || before && y === p[0]) return v;
+  const next = graph[i + 1];
+  return next ? lerp(vf, graphPair(next[1])[0], curveAt(p[2], (y - p[0]) / (next[0] - p[0]))) : vf;
+}
+function expandGraph(graph) {
+  const out = [];
+  graph.forEach((p, i) => {
+    out.push([p[0], p[1]]);
+    if (p[2] && p[2][0] !== p[2][1] && graph[i + 1])
+      for (let y = p[0] + 15; y < graph[i + 1][0]; y += 15) out.push([y, graphAt(graph, y)]);
+  });
+  return out;
+}
+// after kshootmania/src/MusicGame/Scroll/HighwayScroll.cpp (ksm-v2, MIT); stops after libkson/src/Util/GraphUtils.cpp (MIT).
+function scrollMap(beat) {
+  let graph = expandGraph(beat.scroll_speed?.length ? beat.scroll_speed : [[0, 1]]);
+  const ranges = [];
+  for (const [y, len] of beat.stop || []) {
+    if (!len) continue;
+    if (ranges.length && ranges.at(-1)[1] >= y) ranges.at(-1)[1] = Math.max(ranges.at(-1)[1], y + len);
+    else ranges.push([y, y + len]);
+  }
+  for (const [a, b] of ranges) {
+    const va = graphAt(graph, a, 1, true), vb = graphAt(graph, b);   // the speed coming into the stop
+    graph = [...graph.filter(p => p[0] < a || p[0] > b), [a, [va, 0]], [b, [0, vb]]].sort((a, b) => a[0] - b[0]);
+  }
+  const sums = [0];
+  for (let i = 1; i < graph.length; i++) sums.push(sums[i - 1] + (graph[i][0] - graph[i - 1][0]) * (graphPair(graph[i - 1][1])[1] + graphPair(graph[i][1])[0]) / 2);
+  const at = y => {
+    const i = pointIndex(graph, y);
+    if (i < 0) return (y - graph[0][0]) * graphPair(graph[0][1])[0];
+    return sums[i] + (y - graph[i][0]) * (graphPair(graph[i][1])[1] + graphAt(graph, y, 1, true)) / 2;
+  };
+  return {graph, at, distance: (a, b) => at(b) - at(a)};
+}
+// after kshootmania/src/MusicGame/Camera/HighwayTiltManual.cpp (ksm-v2, MIT); tilt graph rules after libkson/src/Util/TiltUtils.cpp (MIT).
+function tiltPoint(v) {
+  let curve;
+  if (Array.isArray(v) && Array.isArray(v[1])) { curve = v[1]; v = v[0]; }
+  return {v: graphPair(v)[0], vf: graphPair(v)[1], curve};
+}
+function tiltAt(events, y) {
+  const i = pointIndex(events, y); let type = 'normal', manual = null;
+  for (let k = i; k >= 0; k--) {
+    const v = tiltPoint(events[k][1]).vf;
+    if (typeof v === 'string') { type = v; break; }
+  }
+  if (i >= 0) {
+    const p = tiltPoint(events[i][1]), next = events[i + 1];
+    if (typeof p.vf === 'number') {
+      manual = p.vf;
+      if (next && typeof next[1] !== 'string') manual = lerp(p.vf, tiltPoint(next[1]).v, curveAt(p.curve, (y - events[i][0]) / (next[0] - events[i][0])));
+    }
+  }
+  return {manual, keep: type.startsWith('keep_'), scale: type === 'zero' ? 0 : type.endsWith('biggest') ? 2.5 : type.endsWith('bigger') ? 1.75 : 1};
+}
+function laserValueAt(l, y) {
+  if (!l.pts.length || y < l.pts[0].y || y > l.pts.at(-1).y) return null;
+  return graphAt(l.graph, y);
+}
+function tiltTarget(lasers, y) {
+  let target = 0;
+  for (const side of [0, 1]) {
+    const lane = lasers.filter(l => l.side === side);
+    let v = null;
+    for (const l of lane) { const x = laserValueAt(l, y); if (x !== null) { v = x; break; } }
+    if (v === null) v = lane.find(l => l.pts[0].y > y && l.pts[0].y <= y + 480)?.pts[0].a ?? null;
+    if (v !== null) target += side ? -(1 - v) : v;
+  }
+  return target;
+}
+const newTilt = () => ({factor: 0, target: 0, scale: 1, blend: 0, manual: 0});
+function stepTilt(state, lasers, events, y, dt) {
+  const mode = tiltAt(events, y); let target = tiltTarget(lasers, y);
+  const prev = state.factor, diff = Math.abs(target - prev);
+  let speed = 4.5 * (diff < 0.1 ? diff / 0.1 : 1) * (Math.abs(target) < 0.001 ? 0.2 : 1);
+  state.factor = approach(prev, target, dt * Math.max(0.5, speed));
+  if (mode.keep && (Math.abs(target) < Math.abs(state.target) || Math.sign(target) + Math.sign(state.target) === 0 && Math.abs(prev) > 0.018)) {
+    state.factor = prev; target = state.target;
+  }
+  state.target = target; state.scale = approach(state.scale, mode.scale, dt * 4);
+  state.blend = clamp(state.blend + dt / 0.04 * (mode.manual === null ? -1 : 1), 0, 1);
+  if (mode.manual !== null) state.manual = mode.manual;
+  return lerp(state.factor * state.scale, state.manual, state.blend) * Math.PI / 18;
+}
+// after kshootmania/src/MusicGame/Camera/CamPattern/CamPatternSpin.cpp, CamPatternHalfSpin.cpp, CamPatternSwing.cpp (ksm-v2, MIT).
+function patternAt(patterns, slams, y) {
+  const out = {highway: 0, jdgline: 0, shift: 0};
+  for (const kind of ['spin', 'half_spin', 'swing']) {
+    const e = (patterns[kind] || []).filter(e => e[0] <= y && slams.some(s => s.y === e[0] && s.d === e[1])).at(-1);
+    if (!e || !e[2]) continue;
+    const r = (y - e[0]) / e[2], d = e[1];
+    if (kind === 'swing') {
+      if (r >= 1) continue;
+      const v = e[3] || {}, decay = v.decay_order ?? 2;
+      out.shift += 5 * Math.sin(Math.PI * (v.repeat ?? 3) * r) * Math.pow(1 - r, decay === 1 || decay === 2 ? decay : 0) * ((v.scale ?? 250) / 50) * d;
+    } else {
+      if (r < 1) {
+        let deg;
+        if (kind === 'spin') {
+          if (r < 360 / 675) deg = Math.sin(r / (360 / 675) * 0.75) / Math.sin(0.75) * 360;
+          else if (r < 440 / 675) deg = Math.sin((r * 675 - 360) * 9 / 8 * Math.PI / 180) * 30;
+          else deg = (1 - Math.cos((1 - r) * 90 / 235 * 675 * Math.PI / 180) ** 2) * 30;
+        } else {
+          if (r < 110 / 400) deg = Math.sin(r / (110 / 400) * 1.8) / Math.sin(1.8) * 60;
+          else if (r < 220 / 400) deg = (Math.cos((r * 400 - 110) * 1.8 / 110) - Math.cos(1.8)) / (1 - Math.cos(1.8)) * 60;
+          else if (r < 310 / 400) deg = -Math.sin((r * 400 - 220) * 1.8 / 90) / Math.sin(1.8) * 15;
+          else deg = -(Math.cos((r * 400 - 310) * 1.8 / 90) - Math.cos(1.8)) / (1 - Math.cos(1.8)) * 15;
+        }
+        out.highway -= d * deg;
+      }
+      if (r < 1.5) out.jdgline -= d * Math.sin(2 * Math.PI * r) * 20 * (r > 1 ? (1.5 - r) / 0.5 : 1);
+    }
+  }
+  return out;
+}
+// after kshootmania/src/MusicGame/Judgment/LaserSlamShake.cpp (ksm-v2, MIT).
+function slamShake(slams, patterns, t) {
+  const s = slams.filter(s => s.t <= t && !(patterns.swing || []).some(e => e[0] === s.y && e[1] === s.d)).at(-1);
+  if (!s || t - s.t >= 0.15) return 0;
+  const r = (t - s.t) / 0.15;
+  return Math.sin(Math.PI * r) * (1 - r) ** 2 * s.d * (17 * 50 / 150 / 2);
+}
+// after kshootmania/src/MusicGame/Audio/LaserSlamSE.cpp (ksm-v2, MIT), in note-time/autoplay mode.
+function laserSlamEvents(chart, pulseToSec) {
+  const info = chart.audio?.key_sound?.laser || {}, widths = new Map();
+  for (const lane of chart.note?.laser || []) for (const [start, points, width = 1] of lane) for (const [ry, v] of points) {
+    const [a, b] = graphPair(v); if (a === b) continue;
+    const y = start + ry, scale = info.legacy?.vol_auto ? clamp(Math.abs(b - a) * width * 2, 0, 1) : 1;
+    // Simultaneous slams use the louder lane, rather than doubling the sound.
+    widths.set(y, Math.max(widths.get(y) ?? 0, scale));
+  }
+  const volumes = info.vol || [], variants = ['slam_up', 'slam_down', 'slam_swing', 'slam_mute'];
+  return [...widths].sort((a, b) => a[0] - b[0]).map(([y, scale]) => {
+    const key = Object.entries(info.slam_event || {}).find(([, ys]) => ys.includes(y))?.[0];
+    // The KSH converters (and older libkson charts) retain up/down/swing/mute.
+    const name = variants.includes(key) ? key : variants.includes('slam_' + key) ? 'slam_' + key : 'slam';
+    const vol = volumes[pointIndex(volumes, y)]?.[1] ?? 0.5;
+    return {y, t: pulseToSec(y), name, vol: vol * scale};
+  });
+}
+// after kshootmania/src/MusicGame/Graphics/Highway/Highway3DGraphics.cpp (ksm-v2, MIT).
+function highwayCorners(cam) {
+  const w = 304 * 2 / 13, h = 936 * 13 / 20, below = h * 14 / 1024, above = h - below;
+  const bottom = cam.zoom_bottom / (cam.zoom_bottom > 0 ? 450 : 180), angle = -0.6125;
+  let fy, fz, ny, nz;
+  if (cam.legacy) {
+    const top = cam.zoom_top / 75 / (cam.zoom_top <= 0 ? 2.5 : 1);
+    fy = -top * 100 * Math.sin(angle); fz = h / 2 + top * 100 * Math.cos(angle);
+    ny = -bottom * 100 * Math.sin(angle) * h / above + top * 100 * below / above * Math.sin(angle);
+    nz = -h / 2 - bottom * 100 * Math.cos(angle) * h / above - top * 100 * below / above * Math.cos(angle);
+  } else {
+    const a = cam.zoom_top * Math.PI / 1200;
+    fy = above * Math.sin(a) / 2.5; fz = -above / 2 + above * Math.cos(a);
+    ny = -bottom * 100 * Math.sin(angle) * h / above - below * Math.sin(a) / 2.5;
+    nz = -above / 2 - below / 2 * Math.cos(a) - bottom * 100 * Math.cos(angle) * h / above;
+  }
+  return [[-w, fy, fz, 0, 0], [w, fy, fz, 1, 0], [-w, ny, nz, 0, 1], [w, ny, nz, 1, 1]];
+}
+// after kshootmania/src/MusicGame/Scroll/HighwayScroll.cpp (ksm-v2, MIT); mode BPM after libkson/src/Util/TimingUtils.cpp (MIT).
+function effectiveStdBpm(meta, bpms, lastPulse) {
+  if (meta.std_bpm > 0) return meta.std_bpm;
+  if (bpms.length === 1) return bpms[0][1];
+  const durations = new Map();
+  for (let i = 0; i < bpms.length; i++) {
+    const [y, b] = bpms[i]; if (y > lastPulse) break;
+    const key = Math.trunc(b * 1000) / 1000;
+    durations.set(key, (durations.get(key) || 0) + Math.min(lastPulse, bpms[i + 1]?.[0] ?? lastPulse) - y);
+  }
+  return [...durations].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0]?.[0] ?? 120;
+}
+// after kshootmania/src/MusicGame/Camera/CameraMath.hpp (ksm-v2, MIT).
+function jdgScale(bottom, legacy, overlay = false) {
+  const s = bottom / (bottom > 0 ? 450 : 180), s300 = 300 / 180;
+  let order = overlay ? 4 : 5;
+  if (bottom < 0) order -= overlay ? 2 : 3;
+  if (bottom > 200) order += 10 * (s - 200 / 450);
+  const base = legacy ? (s + s300) / s300 : Math.max(s + s300, 0) / s300;
+  const extra = overlay && !legacy ? 0.4545 * 1.1 ** Math.min((s - s300) / s300, 1) : 0.5;
+  const scale = (base ** order + extra) / 1.5;
+  return !overlay && !legacy ? Math.max(scale, 1) : scale;
+}
+</script>
+<script id="chart-data" type="application/json">null</script>
+<script>
+const $ = id => document.getElementById(id);
+const AUDIO_SRC = "";
+let dispose = null, audioURL = null, loadedChart = null;
+const audioFiles = new Map();
+function normalPath(path) {
+  const parts = [];
+  for (const part of path.replaceAll('\\', '/').toLowerCase().split('/')) {
+    if (part === '..') parts.pop(); else if (part && part !== '.') parts.push(part);
+  }
+  return parts.join('/');
+}
+const filePath = f => normalPath(f.viewerPath || f.webkitRelativePath || f.name);
+function mount(chart, src) {
+  dispose?.(); loadedChart = chart;
+  dispose = startViewer(chart, src);
+}
+async function openFiles(files) {
+  try {
+    const chartFile = files.find(f => /\.(kson|ksh)$/i.test(f.name));
+    for (const f of files) if (/\.(mp3|ogg|wav|m4a|flac|opus|aac)$/i.test(f.name)) audioFiles.set(filePath(f), f);
+    let chart = loadedChart;
+    if (chartFile) {
+      const bytes = await chartFile.arrayBuffer(); let text;
+      try { text = new TextDecoder('utf-8', {fatal: true}).decode(bytes); }
+      catch (e) { if (!/\.ksh$/i.test(chartFile.name)) throw e; text = new TextDecoder('shift-jis').decode(bytes); }
+      chart = /\.ksh$/i.test(chartFile.name) ? parseKsh(text) : JSON.parse(text.replace(/^\uFEFF/, ''));
+      if (!chart?.beat?.bpm?.length || chart.beat.bpm.some(e => !(e[1] > 0))) throw Error('BPM のある KSON / KSH を選んでください');
+      chartPath = filePath(chartFile);
+    }
+    if (!chart) { $('open-status').textContent = '音源を保持しました。KSON / KSH を開いてください'; return; }
+    const filename = (chart.audio?.bgm?.filename || '').replaceAll('\\', '/').toLowerCase();
+    const relative = normalPath(chartPath.slice(0, chartPath.lastIndexOf('/') + 1) + filename);
+    const candidates = [...audioFiles.values()];
+    const matched = audioFiles.get(relative) || audioFiles.get(filename) || candidates.find(f => filePath(f).endsWith('/' + filename) || f.name.toLowerCase() === filename)
+      || candidates.find(f => f.name.toLowerCase() === filename.slice(filename.lastIndexOf('/') + 1));   // picked files have no folder
+    const selected = matched || (candidates.length === 1 ? candidates[0] : null);
+    const src = selected ? URL.createObjectURL(selected) : chart === embedded ? AUDIO_SRC : '';
+    const oldURL = audioURL; audioURL = selected ? src : null;
+    mount(chart, src); if (oldURL) URL.revokeObjectURL(oldURL);
+    $('open-status').textContent = (chartFile?.name || chart.meta?.title || 'Chart') + (selected ? ' · ' + selected.name : src ? ' · 埋め込み音源' : ' · 音源なし（音源を追加できます）');
+  } catch (e) { $('open-status').textContent = '読み込み失敗: ' + e.message; }
+}
+let chartPath = '', opening = Promise.resolve();
+const queueFiles = files => { opening = opening.then(() => openFiles(files)); return opening; };
+$('files').onchange = e => { queueFiles([...e.target.files]); e.target.value = ''; };
+async function entryFiles(entry) {
+  if (entry.isFile) return [await new Promise((resolve, reject) => entry.file(f => { f.viewerPath = entry.fullPath.replace(/^\//, ''); resolve(f); }, reject))];
+  const reader = entry.createReader(), files = [];
+  while (true) { const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject)); if (!batch.length) break; for (const child of batch) files.push(...await entryFiles(child)); }
+  return files;
+}
+document.addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragging'); });
+document.addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
+document.addEventListener('drop', e => {
+  e.preventDefault(); document.body.classList.remove('dragging');
+  const entries = [...(e.dataTransfer.items || [])].map(i => i.webkitGetAsEntry?.()).filter(Boolean), files = [...e.dataTransfer.files];
+  opening = opening.then(async () => { try { await openFiles(entries.length ? (await Promise.all(entries.map(entryFiles))).flat() : files); } catch (err) { $('open-status').textContent = '読み込み失敗: ' + err.message; } });
+});
+const embedded = JSON.parse($('chart-data').textContent);
+if (embedded) mount(embedded, AUDIO_SRC);
+else { $('title').textContent = 'K-Shoot MANIA chart viewer'; $('overlay').hidden = true; for (const id of ['play','back','seek']) $(id).disabled = true; }
+
+function startViewer(chart, source) {
+const audio = new Audio(); audio.preload = 'auto';
+audio.addEventListener('error', () => { if (!disposed) $('open-status').textContent = '音源を再生できません。ブラウザ対応形式の音源を選んでください'; });
+const hasAudio = source.length > 0;
+if (hasAudio) audio.src = source;
+audio.volume = clamp(chart.audio?.bgm?.vol ?? 1, 0, 1);
+let disposed = false, animation = 0;
+const events = new AbortController();
+for (const id of ['play','back','seek']) $(id).disabled = false;
+$('overlay').hidden = false; $('marks').replaceChildren();
+$('play').textContent = '▶ PLAY'; $('time').textContent = '0:00'; $('latency').textContent = '';
+document.title = chart.meta?.title || 'Chart viewer';
+// ---- timing (pulses: 240 per beat, 960 per 4/4 measure)
+const bpms = [];
+{ let sec = 0, prev = 0, bpm = chart.beat.bpm[0][1];
+  for (const [p, b] of chart.beat.bpm) { sec += (p - prev) * 60 / (240 * bpm); bpms.push([p, sec, b]); prev = p; bpm = b; } }
+const pulseToSec = p => { let e = bpms[0]; for (const x of bpms) if (x[0] <= p) e = x; return e[1] + (p - e[0]) * 60 / (240 * e[2]); };
+const bpmAtSec = s => { let b = bpms[0][2]; for (const x of bpms) if (x[1] <= s) b = x[2]; return b; };
+const sigs = []; { const src = [[0, [4, 4]], ...(chart.beat.time_sig || [])];
+  let pulse = 0, m = 0, len = 960; for (const [mm, [n, d]] of src) { pulse += (mm - m) * len; len = 960 * n / d; sigs.push([mm, pulse, len]); m = mm; } }
+const measureToPulse = m => { let e = sigs[0]; for (const x of sigs) if (x[0] <= m) e = x; return e[1] + (m - e[0]) * e[2]; };
+const pulseToMeasure = p => { let e = sigs[0]; for (const x of sigs) if (x[1] <= p) e = x; return e[0] + Math.floor((p - e[1]) / e[2]); };
+const offset = (chart.audio?.bgm?.offset || 0) / 1000;
+
+// ---- notes as seconds
+const notes = [];   // {kind:'bt'|'fx', lane, t0, t1}
+for (const kind of ['bt', 'fx']) (chart.note?.[kind] || []).forEach((lane, i) => lane.forEach(n => {
+  const [y, l] = typeof n === 'number' ? [n, 0] : n; notes.push({kind, lane: i, y0: y, y1: y + l, t0: pulseToSec(y), t1: pulseToSec(y + l), long: l > 0});
+}));
+const lasers = [];  // {side, wide, pts:[{t, a, b}]}
+(chart.note?.laser || []).forEach((lane, side) => lane.forEach(([start, points, width]) => {
+  lasers.push({graph: expandGraph(points).map(p => [start + p[0], p[1]]), side, wide: width === 2, pts: expandGraph(points).map(([ry, v]) => { const [a, b] = graphPair(v); return {y: start + ry, t: pulseToSec(start + ry), a, b}; })});
+}));
+const bpmAtPulse = p => { let b = bpms[0][2]; for (const x of bpms) if (x[0] <= p) b = x[2]; return b; };
+const lastSec = Math.max(...notes.map(n => n.t1), ...lasers.map(l => l.pts.at(-1).t), 1) + 2;
+$('total').textContent = notes.length + lasers.length;
+const measureCount = Math.max(1, pulseToMeasure(secToPulseApprox(lastSec)) + 1);
+$('seek').max = measureCount; $('seek').step = '0.01'; $('seek').value = 0;
+
+// ---- metadata
+const meta = chart.meta || {};
+$('title').textContent = meta.title || 'Untitled'; $('artist').textContent = meta.artist || '';
+const DIFF = ['LIGHT', 'CHALLENGE', 'EXHAUST', 'INFINITE'];
+$('diffname').textContent = typeof meta.difficulty === 'number' ? DIFF[meta.difficulty] || '' : (meta.difficulty || '');
+$('level').textContent = meta.level ?? '';
+$('srcnote').textContent = `${meta.chart_author ? '譜面: ' + meta.chart_author + ' · ' : ''}ノーツ ${notes.length} · 直角 ${lasers.reduce((n, l) => n + l.pts.filter(q => q.a !== q.b).length, 0)}` + (hasAudio ? '' : ' · 音源なし');
+
+// ---- clock. audio.currentTime is the master but updates in coarse steps, so a
+// performance.now() estimate runs between them and resyncs on drift. What is on
+// screen lags the sound by the output latency (large on Bluetooth) plus a manual offset.
+let playing = false, starting = false, preRoll = false, rate = +$('rate').value, virtualStart = 0, virtualAt = 0, chartTime = 0;
+let anchorAt = 0, anchorTime = 0, outputLatency = 0, userOffset = 0;
+const audioNow = () => {   // chart time of the sample the audio element is producing
+  if (!playing) return chartTime;
+  if (!hasAudio || preRoll) return virtualStart + (performance.now() - virtualAt) / 1000 * rate;
+  const raw = audio.currentTime - offset, est = anchorTime + (performance.now() - anchorAt) / 1000 * rate;
+  if (!anchorAt || audio.paused || Math.abs(raw - est) > 0.04) { anchorAt = performance.now(); anchorTime = raw; return raw; }
+  return est;
+};
+const now = () => playing ? audioNow() - outputLatency - userOffset / 1000 : chartTime;
+try { userOffset = +(localStorage.getItem('ksmauto-preview-offset') || 0); } catch (e) {}
+function measureLatency() {
+  try { ctx ||= new AudioContext(); ctx.resume(); outputLatency = (ctx.outputLatency || 0) + (ctx.baseLatency || 0); } catch (e) { outputLatency = 0; }
+  $('latency').textContent = `自動補正 ${Math.round(outputLatency * 1000)}ms`;
+}
+async function play() {
+  if (playing || starting || disposed) return;
+  starting = true; measureLatency();
+  await ensureEffects();
+  if (disposed || !starting) return;
+  starting = false; playing = true; anchorAt = 0; scheduled = chartTime - 1e-9;
+  virtualStart = chartTime; virtualAt = performance.now(); preRoll = hasAudio && chartTime + offset < 0;
+  $('overlay').hidden = true; $('play').textContent = '❚❚ PAUSE';
+  if (hasAudio && !preRoll) await startAudio(chartTime);
+  ensureSound();
+  if (playing && !disposed) scheduleSounds();
+}
+async function startAudio(t) {
+  audio.playbackRate = rate; audio.currentTime = Math.max(0, t + offset); anchorAt = 0;
+  try { await audio.play(); }
+  catch (e) { if (!disposed && e.name !== 'AbortError') { pause(); $('overlay').hidden = false; } }
+}
+function pause() {
+  chartTime = playing ? audioNow() : chartTime; starting = false; playing = false;
+  audio.pause(); resetSounds(); $('play').textContent = '▶ PLAY';
+}
+function seekTo(t) { resetSounds(); const was = playing; if (was) pause(); chartTime = Math.max(-1, Math.min(lastSec, t)); lastTick = chartTime; scheduled = chartTime; if (hasAudio) audio.currentTime = Math.max(0, chartTime + offset); fxNode?.port.postMessage({type: 'reset'}); if (was) play(); }
+audio.addEventListener('ended', () => { pause(); chartTime = 0; $('overlay').hidden = false; });
+$('start').onclick = play;
+$('play').onclick = () => playing ? pause() : play();
+$('back').onclick = () => { const m = Math.max(0, pulseToMeasure(Math.max(0, secToPulseApprox(now()))) - 4); seekTo(pulseToSec(measureToPulse(m))); };
+$('rate').onchange = e => { const was = playing; if (was) pause(); rate = +e.target.value; audio.playbackRate = rate; if (was) play(); };
+$('seek').oninput = e => seekTo(pulseToSec(measureToPulse(+e.target.value)));
+document.addEventListener('keydown', e => { if (e.code === 'Space' && !['SELECT', 'INPUT', 'BUTTON'].includes(e.target.tagName)) { e.preventDefault(); playing ? pause() : play(); } }, {signal: events.signal});
+function secToPulseApprox(s) { let e = bpms[0]; for (const x of bpms) if (x[1] <= s) e = x; return e[0] + (s - e[1]) * 240 * e[2] / 60; }
+
+function measureAtPulse(p) { const m = pulseToMeasure(p), start = measureToPulse(m); return m + (p - start) / (measureToPulse(m + 1) - start); }
+
+// section markers from editor comments
+// Labels need room; a crowded marker keeps only its tick (the name stays in its tooltip).
+let lastLabel = -100;
+for (const [p, text] of chart.editor?.comment || []) {
+  const pct = measureAtPulse(p) / measureCount * 100, s = document.createElement('span');
+  s.style.left = pct + '%'; s.title = text; $('marks').append(s);
+  if (pct - lastLabel >= 11) { const em = document.createElement('em'); em.style.left = pct + '%'; em.textContent = text; $('marks').append(em); lastLabel = pct; }
+}
+
+// ---- assist ticks
+const soundSources = new Set();
+function trackSound(s) { soundSources.add(s); s.onended = () => soundSources.delete(s); return s; }
+function resetSounds() { for (const s of soundSources) { try { s.stop(); } catch (e) {} } soundSources.clear(); }
+let ctx = null, lastTick = -1, scheduled = -1;
+function ensureSound() { if (!$('assist').checked && !$('slam').checked) return; ctx ||= new AudioContext(); ctx.resume(); }
+$('assist').onchange = ensureSound;
+let slamGain = null;
+$('slam').onchange = () => { ensureSound(); if (slamGain) slamGain.gain.setValueAtTime($('slam').checked ? 1 : 0, ctx.currentTime); };
+$('vis').value = userOffset; $('vis-out').textContent = `${userOffset > 0 ? '+' : ''}${userOffset}ms`;
+$('vis').oninput = e => {
+  userOffset = +e.target.value; $('vis-out').textContent = `${userOffset > 0 ? '+' : ''}${userOffset}ms`;
+  try { localStorage.setItem('ksmauto-preview-offset', String(userOffset)); } catch (err) {}
+};
+function tick(hi, delay = 0) {
+  if (!ctx) return; const t = ctx.currentTime + Math.max(0, delay), o = trackSound(ctx.createOscillator()), g = ctx.createGain();
+  o.frequency.value = hi ? 1760 : 1320; g.gain.setValueAtTime(0.18, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
+  o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t + 0.05);
+}
+
+// ---- audio effects: FX long effects and laser filters run in an AudioWorklet (#fx-worklet), FX chip key
+// sounds are synthesized here. Approximations from the KSON spec, as if every FX long were held and every
+// laser followed.
+const EFFECT_DEFAULTS = {
+  retrigger: {update_period: '1/2', wave_length: '0', rate: '70%', update_trigger: 'off', mix: '0%>100%'},
+  gate: {wave_length: '0', rate: '50%', mix: '0%>90%'},
+  flanger: {period: '2.0', delay: '30samples', depth: '45samples', feedback: '60%', stereo_width: '0%', vol: '75%', mix: '0%>80%'},
+  pitch_shift: {pitch: '0>12', chunk_size: '700samples', overlap: '40%', mix: '0%>100%'},
+  bitcrusher: {reduction: '0samples-30samples', mix: '0%>100%'},
+  phaser: {period: '1/2', stage: '6', freq_1: '1500Hz', freq_2: '20000Hz', q: '0.707', feedback: '35%', stereo_width: '75%', hi_cut_gain: '-8.0dB', mix: '0%>50%'},
+  wobble: {wave_length: '0', freq_1: '500Hz', freq_2: '20000Hz', q: '1.414', mix: '0%>80%'},
+  tapestop: {speed: '50%', trigger: 'off>on', mix: '0%>100%'},
+  echo: {update_period: '0', wave_length: '0', update_trigger: 'off>on', feedback_level: '60%', mix: '0%>100%'},
+  sidechain: {period: '1/4', hold_time: '50ms', attack_time: '10ms', release_time: '1/8', ratio: '1.0>5.0'},
+  peaking_filter: {v: '0%-100%', gain: '50%', mix: '0%>100%'},
+  high_pass_filter: {v: '0%-100%', mix: '0%>100%'},
+  low_pass_filter: {v: '0%-100%', mix: '0%>100%'},
+};
+const audioEffect = chart.audio?.audio_effect || {};
+const effectDefs = {fx: {}, laser: {}};
+for (const type of Object.keys(EFFECT_DEFAULTS)) effectDefs[type.endsWith('filter') ? 'laser' : 'fx'][type] = {type};
+effectDefs.laser.bitcrusher = {type: 'bitcrusher'};
+for (const kind of ['fx', 'laser']) for (const [name, d] of audioEffect[kind]?.def || []) effectDefs[kind][name] = d;
+// "Off>OnMin-OnMax" → numbers; lengths become measures, or negative seconds.
+function paramUnit(s) {
+  s = s.trim(); let m;
+  if (s === 'on' || s === 'off') return s === 'on' ? 1 : 0;
+  if ((m = s.match(/^1\/(\d+)$/))) return 1 / +m[1];
+  if (s.endsWith('samples') || s.endsWith('Hz') && !s.endsWith('kHz') || s.endsWith('dB')) return parseFloat(s);
+  if (s.endsWith('kHz')) return parseFloat(s) * 1000;
+  if (s.endsWith('ms')) return -parseFloat(s) / 1000;
+  if (s.endsWith('%')) return parseFloat(s) / 100;
+  if (s.endsWith('s')) return -parseFloat(s);
+  return parseFloat(s) || 0;
+}
+function param(s) {
+  const [off, on] = String(s).includes('>') ? String(s).split('>') : [null, String(s)];
+  const m = on.match(/^(-?[^-]+)(?:-(-?.+))?$/) || [on, on];
+  const min = paramUnit(m[1]), max = m[2] === undefined ? min : paramUnit(m[2]);
+  return {off: off === null ? min : paramUnit(off), min, max};
+}
+// param_change: {name: {param: [[pulse, value], ...]}} overrides the definition from that pulse on; a long
+// note's own parameters (`extra`, set at `from`) win until a later change.
+const changesAt = (kind, name, y, after = -Infinity) => Object.fromEntries(Object.entries(audioEffect[kind]?.param_change?.[name] || {})
+  .map(([k, list]) => [k, list.filter(e => after < e[0] && e[0] <= y).at(-1)?.[1]]).filter(([, v]) => v !== undefined));
+const changePulses = (kind, name) => Object.values(audioEffect[kind]?.param_change?.[name] || {}).flatMap(list => list.map(e => e[0]));
+function effectOf(kind, name, extra = {}, y = 0, from = y) {
+  const d = effectDefs[kind][name]; if (!d || !EFFECT_DEFAULTS[d.type]) return null;
+  const raw = {...EFFECT_DEFAULTS[d.type], ...d.v, ...changesAt(kind, name, from), ...extra, ...changesAt(kind, name, y, from)};
+  return {type: d.type, p: Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, param(v)]))};
+}
+const fxSegs = [[], []];
+{ const events = [[], []];
+  for (const [name, lanes] of Object.entries(audioEffect.fx?.long_event || {})) lanes.forEach((list, i) => list.forEach(e => {
+    const [y, extra] = Array.isArray(e) ? e : [e, {}]; events[i]?.push([y, name, extra]);
+  }));
+  for (const n of notes) if (n.kind === 'fx' && n.long) {
+    const list = events[n.lane].filter(e => n.y0 <= e[0] && e[0] < n.y1).sort((a, b) => a[0] - b[0]);
+    list.forEach((e, k) => {
+      const y1 = k + 1 < list.length ? list[k + 1][0] : n.y1;
+      const cuts = [e[0], ...new Set(changePulses('fx', e[1]).filter(y => e[0] < y && y < y1).sort((a, b) => a - b)), y1];
+      for (let i = 0; i + 1 < cuts.length; i++) {
+        const fx = effectOf('fx', e[1], e[2], cuts[i], e[0]); if (fx) fxSegs[n.lane].push({t0: pulseToSec(cuts[i]), t1: pulseToSec(cuts[i + 1]), ...fx});
+      }
+    });
+  }
+}
+const laserSwitches = [[-1, 'peaking_filter']];
+for (const [name, ys] of Object.entries(audioEffect.laser?.pulse_event || {})) for (const y of ys) laserSwitches.push([y, name]);
+laserSwitches.sort((a, b) => a[0] - b[0]);
+const laserFx = [];
+laserSwitches.forEach(([y, name], i) => {
+  const y1 = i + 1 < laserSwitches.length ? laserSwitches[i + 1][0] : Infinity;
+  for (const c of [y, ...new Set(changePulses('laser', name).filter(c => y < c && c < y1).sort((a, b) => a - b))])
+    laserFx.push([c < 0 ? -1e9 : pulseToSec(c), effectOf('laser', name, {}, Math.max(0, c))]);
+});
+const keySounds = [];
+for (const [name, lanes] of Object.entries(chart.audio?.key_sound?.fx?.chip_event || {})) for (const list of lanes) for (const e of list) {
+  const [y, o] = Array.isArray(e) ? e : [e, {}]; keySounds.push({t: pulseToSec(y), name, vol: o?.vol ?? 1});
+}
+keySounds.sort((a, b) => a.t - b.t);
+const slamSounds = laserSlamEvents(chart, pulseToSec);
+const measureStarts = []; for (let m = 0; measureStarts.length < 5000; m++) { const s = pulseToSec(measureToPulse(m)); measureStarts.push([s]); if (s > lastSec) break; }
+let fxNode = null, fxLoading = null;
+$('effects').checked = hasAudio; $('effects').disabled = !hasAudio;
+function ensureEffects() {
+  if (!hasAudio || !$('effects').checked || !ctx?.audioWorklet) return;
+  if (fxLoading) return fxLoading;
+  fxLoading = (async () => {
+    // A blob: module does not load from file:// (null origin); a data: URL does.
+    const code = $('fx-worklet').textContent;
+    const url = URL.createObjectURL(new Blob([code], {type: 'text/javascript'}));
+    try { await ctx.audioWorklet.addModule(url); }
+    catch (e) { await ctx.audioWorklet.addModule('data:text/javascript;charset=utf-8,' + encodeURIComponent(code)); }
+    finally { URL.revokeObjectURL(url); }
+    if (disposed) return;
+    const node = new AudioWorkletNode(ctx, 'ksm-effects', {outputChannelCount: [2]});
+    node.port.postMessage({type: 'data', fx: fxSegs, laserFx, measures: measureStarts, bpms: bpms.map(([, s, b]) => [s, b]),
+      lasers: lasers.map(l => ({side: l.side, pts: l.pts.map(({t, a, b}) => ({t, a, b}))}))});
+    ctx.createMediaElementSource(audio).connect(node).connect(ctx.destination);
+    fxNode = node;
+  })().catch(e => { if (disposed) return; console.warn('audio effects unavailable', e); $('effects').checked = false; $('effects').disabled = true; });
+  return fxLoading;
+}
+$('effects').onchange = () => { if (playing) ensureEffects(); };
+let noise = null;
+function ensureNoise() {
+  noise ||= (() => { const b = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate), d = b.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; return b; })();
+}
+function slamSound(name, vol, delay) {
+  if (!ctx || name === 'slam_mute' || vol <= 0) return;
+  ensureNoise();
+  if (!slamGain) { slamGain = ctx.createGain(); slamGain.gain.value = $('slam').checked ? 1 : 0; slamGain.connect(ctx.destination); }
+  const t = ctx.currentTime + Math.max(0, delay), out = ctx.createGain(); out.gain.value = vol * 0.6; out.connect(slamGain);
+  const [f0, f1, len] = name === 'slam_up' ? [2200, 6500, 0.09] : name === 'slam_down' ? [6500, 1200, 0.1] : name === 'slam_swing' ? [1800, 2200, 0.11] : [4500, 1800, 0.08];
+  const s = trackSound(ctx.createBufferSource()), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  s.buffer = noise; f.type = 'bandpass'; f.Q.value = 1.2;
+  f.frequency.setValueAtTime(f0, t);
+  if (name === 'slam_swing') f.frequency.exponentialRampToValueAtTime(6000, t + len / 2);
+  f.frequency.exponentialRampToValueAtTime(f1, t + len);
+  g.gain.setValueAtTime(0.001, t); g.gain.linearRampToValueAtTime(1, t + 0.001); g.gain.exponentialRampToValueAtTime(0.001, t + len);
+  s.connect(f).connect(g).connect(out); s.start(t, Math.random() * 0.5); s.stop(t + len);
+  const o = trackSound(ctx.createOscillator()), click = ctx.createGain(); o.type = 'triangle';
+  o.frequency.setValueAtTime(f0 * 0.6, t); o.frequency.exponentialRampToValueAtTime(f1 * 0.4, t + 0.025);
+  click.gain.setValueAtTime(0.5, t); click.gain.exponentialRampToValueAtTime(0.001, t + 0.025);
+  o.connect(click).connect(out); o.start(t); o.stop(t + 0.03);
+}
+function keySound(name, vol, delay) {
+  if (!ctx || !/^(clap|snare)/.test(name)) return;   // sound files next to the chart are not available here
+  ensureNoise();
+  const t = ctx.currentTime + Math.max(0, delay), out = ctx.createGain(); out.gain.value = vol * 0.6; out.connect(ctx.destination);
+  const burst = (at, len, freq, q, level) => {
+    const s = trackSound(ctx.createBufferSource()), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    s.buffer = noise; f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = q;
+    g.gain.setValueAtTime(level, at); g.gain.exponentialRampToValueAtTime(0.001, at + len);
+    s.connect(f).connect(g).connect(out); s.start(at, Math.random() * 0.5); s.stop(at + len + 0.02);
+  };
+  if (name.startsWith('clap')) {
+    const f = name === 'clap_impact' ? 900 : 1300;
+    for (const k of [0, 0.01, 0.02]) burst(t + k, 0.012, f, 1.4, 1);
+    burst(t + 0.03, name === 'clap_punchy' ? 0.06 : 0.15, f, 1, 0.8);
+  } else {
+    burst(t, 0.16, name === 'snare_lo' ? 1600 : 2600, 0.7, 0.9);
+    const o = trackSound(ctx.createOscillator()), g = ctx.createGain(), f0 = name === 'snare_lo' ? 150 : 210;
+    o.type = 'triangle'; o.frequency.setValueAtTime(f0 * 1.5, t); o.frequency.exponentialRampToValueAtTime(f0, t + 0.03);
+    g.gain.setValueAtTime(0.8, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+    o.connect(g).connect(out); o.start(t); o.stop(t + 0.1);
+  }
+}
+function scheduleSounds() {
+  if (!ctx) return;
+  const a = audioNow(), until = a + 0.1 * rate;
+  if ($('assist').checked) for (const n of notes) if (n.t0 > scheduled && n.t0 <= until) tick(n.kind === 'fx', (n.t0 - a) / rate);
+  if ($('effects').checked) for (const k of keySounds) if (k.t > scheduled && k.t <= until) keySound(k.name, k.vol, (k.t - a) / rate);
+  if ($('slam').checked) for (const s of slamSounds) if (s.t > scheduled && s.t <= until) slamSound(s.name, s.vol, (s.t - a) / rate);
+  scheduled = Math.max(scheduled, until);
+}
+
+// ---- drawing
+const cv = $('field'), g = cv.getContext('2d');
+let W = 0, H = 0;
+function resize() { const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1; W = r.width; H = r.height; cv.width = W * d; cv.height = H * d; g.setTransform(d, 0, 0, d, 0, 0); }
+const observer = new ResizeObserver(resize); observer.observe(cv);
+const flash = [0, 0, 0, 0, 0, 0];
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function frame() {
+  if (disposed) return;
+  if (playing && preRoll && audioNow() + offset >= 0) {
+    const t = audioNow(); preRoll = false; startAudio(t);
+  }
+  const t = playing ? now() : chartTime;
+  if (playing && t > lastSec) { pause(); }
+  if (view3d && gl) { draw3d(t); afterDraw(t); animation = requestAnimationFrame(frame); return; }
+  drawHighwayTexture(t, cameraAt(t));
+  g.clearRect(0, 0, W, H); g.fillStyle = '#070810'; g.fillRect(0, 0, W, H);
+  const width = Math.min(W - 24, 430), height = H - 40;
+  g.drawImage(tex, (W - width) / 2, 0, width, height);
+  drawFlatLine(t, width, height);
+
+  afterDraw(t);
+  animation = requestAnimationFrame(frame);
+}
+
+function afterDraw(t) {
+  for (let i = 0; i < 6; i++) if (flash[i] > 0) flash[i] = reduceMotion ? 0 : Math.max(0, flash[i] - 0.08);
+  // Note beams and scheduled sounds follow chart time.
+  if (playing) {
+    for (const n of notes) if (n.t0 > lastTick && n.t0 <= t) flash[n.kind === 'bt' ? n.lane : 4 + n.lane] = 1;
+    // Ticks follow the sound clock (they share its output latency), scheduled slightly ahead.
+    scheduleSounds();
+    for (const n of notes) if (n.long && n.t0 <= t && t <= n.t1) flash[n.kind === 'bt' ? n.lane : 4 + n.lane] = Math.max(flash[n.kind === 'bt' ? n.lane : 4 + n.lane], 0.6);
+    lastTick = t;
+  }
+  if (fxNode) fxNode.port.postMessage({type: 'clock', ctx: ctx.currentTime, chart: audioNow(), rate, on: playing && $('effects').checked});
+  $('bpm').textContent = Math.round(bpmAtSec(Math.max(0, t)) * 10) / 10;
+  $('measure').textContent = Math.max(0, pulseToMeasure(Math.max(0, secToPulseApprox(t))));
+  const tt = Math.max(0, t); $('time').textContent = `${Math.floor(tt / 60)}:${String(Math.floor(tt % 60)).padStart(2, '0')}`;
+  if (playing) $('seek').value = measureAtPulse(secToPulseApprox(Math.max(0, t)));
+}
+
+// after kshootmania/src/MusicGame/Graphics/Highway/Highway3DGraphics.cpp and GraphicsMain.cpp (ksm-v2, MIT).
+// Notes are drawn in 2D onto a
+// 512x1024 highway texture (Highway3DGraphics::draw2D), which is mapped onto a plane seen by a
+// perspective camera (GraphicsMain: FOV 45deg, eye (0,45,-366), looking 15deg down) and tilted
+// around the view axis by the lasers (HighwayTiltAuto).
+const TEX_W = 512, TEX_H = 1024, JDG_Y = TEX_H - 14, OFF_X = 128;
+const tex = document.createElement('canvas'); tex.width = TEX_W; tex.height = TEX_H;
+const baseCopy = document.createElement('canvas'); baseCopy.width = TEX_W; baseCopy.height = TEX_H;
+const tg = tex.getContext('2d');
+const cv3 = $('field3d'), jdg = $('jdg3d'), jg = jdg.getContext('2d');
+const gl = cv3.getContext('webgl', {alpha: true, premultipliedAlpha: false});
+let view3d = true, glProg = null, glBuf = null, glTex = null;
+const lastPulse = Math.max(0, ...notes.map(n => n.y1), ...lasers.map(l => l.pts.at(-1).y));
+const stdBpm = effectiveStdBpm(chart.meta || {}, chart.beat.bpm, lastPulse);
+const scroll = scrollMap(chart.beat);
+const tiltEvents = chart.camera?.tilt || [];
+const patterns = chart.camera?.cam?.pattern?.laser?.slam_event || {};
+const slams = lasers.flatMap(l => l.pts.filter(p => p.a !== p.b).map(p => ({y: p.y, t: p.t, d: Math.sign(p.b - p.a)}))).sort((a, b) => a.y - b.y);
+const body = chart.camera?.cam?.body || {}, legacy = +(chart.compat?.ksh_version ?? 200) < 167;
+// after kshootmania/src/MusicGame/Camera/CamSystem.cpp (ksm-v2, MIT).
+// A fixed chart-time step makes camera poses reproducible after seeking.
+const cameraSamples = [], tiltState = newTilt(), zoom = {zoom_top: 0, zoom_bottom: 0, zoom_side: 0};
+for (let i = 0; i <= Math.ceil((lastSec + 1) * 120); i++) {
+  const y = Math.floor(secToPulseApprox(i / 120 - 1)), angle = stepTilt(tiltState, lasers, tiltEvents, y, 1 / 120);
+  for (const key of Object.keys(zoom)) zoom[key] = legacy ? lerp(zoom[key], graphAt(body[key], y), (1 / 120) / 0.04) : graphAt(body[key], y);
+  cameraSamples.push([angle, zoom.zoom_top, zoom.zoom_bottom, zoom.zoom_side]);
+}
+function cameraAt(t) {
+  const y = secToPulseApprox(t), index = clamp((t + 1) * 120, 0, cameraSamples.length - 1), i = Math.floor(index);
+  const sample = cameraSamples[i].map((v, k) => lerp(v, cameraSamples[Math.min(i + 1, cameraSamples.length - 1)][k], index - i));
+  const pattern = patternAt(patterns, slams, y);
+  return {tilt: sample[0], zoom_top: legacy ? sample[1] : graphAt(body.zoom_top, y), zoom_bottom: legacy ? sample[2] : graphAt(body.zoom_bottom, y),
+    shift: (legacy ? sample[3] : graphAt(body.zoom_side, y)) / 6 + pattern.shift + slamShake(slams, patterns, t), legacy,
+    rotation: graphAt(body.rotation_deg, y), highway: pattern.highway, jdgline: pattern.jdgline, center_split: graphAt(body.center_split, y)};
+}
+let centerSplit = 0;
+const splitX = (kind, i) => (i < (kind === 'bt' ? 2 : 1) ? -1 : 1) * centerSplit;
+
+const laneX = (kind, i) => OFF_X + 44 + (kind === 'bt' ? 42 : 84) * i + splitX(kind, i);
+// after kshootmania/src/MusicGame/Graphics/Highway/Note/NoteGraphicsUtils.cpp (ksm-v2, MIT).
+const chipH = y => { const tbl = [14, 19, 23, 26, 28, 30, 32, 35], r = (TEX_H - y) / TEX_H * 8, i = Math.floor(r), k = r - i;
+  const at = j => tbl[Math.max(0, Math.min(7, j))]; return Math.round(at(i) + (at(i + 1) - at(i)) * k); };
+const laserX = (v, wide) => wide ? (v * (256 - 48) + 24) * 2 : OFF_X + v * (256 - 48) + 24;
+if (gl) {
+  const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o); return o; };
+  glProg = gl.createProgram();
+  const vertex = sh(gl.VERTEX_SHADER, 'attribute vec4 clip; attribute vec2 uv; varying vec2 v; void main(){ v = uv; gl_Position = clip; }');
+  const fragment = sh(gl.FRAGMENT_SHADER, 'precision mediump float; varying vec2 v; uniform sampler2D t; void main(){ gl_FragColor = texture2D(t, v); }');
+  gl.attachShader(glProg, vertex); gl.attachShader(glProg, fragment);
+  gl.deleteShader(vertex); gl.deleteShader(fragment);
+  gl.linkProgram(glProg); glBuf = gl.createBuffer(); glTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, glTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+  if (aniso) gl.texParameterf(gl.TEXTURE_2D, aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+}
+function setView(v) { view3d = v === '3d' && !!gl; cv3.hidden = !view3d; jdg.hidden = !view3d; cv.style.visibility = view3d ? 'hidden' : ''; }
+$('view').onchange = e => { setView(e.target.value); try { localStorage.setItem('ksmauto-preview-view', e.target.value); } catch (err) {} };
+try { const v = localStorage.getItem('ksmauto-preview-view'); if (v) $('view').value = v; } catch (e) {}
+if (!gl) { $('view').value = 'flat'; $('view').disabled = true; }
+setView($('view').value);
+
+function drawHighwayTexture(t, cam) {
+  centerSplit = 42 * cam.center_split / 200;
+  const cur = secToPulseApprox(t), ppp = 540 / 960 * (+$('hispeed').value * 100) / stdBpm;  // px per pulse
+  const Y = p => JDG_Y - scroll.distance(cur, p) * ppp;
+  const visible = (a, b) => {
+    const ys = [Y(a), Y(b), ...scroll.graph.filter(p => a < p[0] && p[0] < b).map(p => Y(p[0]))];
+    return Math.min(...ys) < TEX_H + 40 && Math.max(...ys) > -60;
+  };
+  tg.globalCompositeOperation = 'source-over';
+  tg.clearRect(0, 0, TEX_W, TEX_H);   // outside the 256px track stays clear (wide lasers only)
+  tg.fillStyle = '#000'; tg.fillRect(OFF_X, 0, 256, TEX_H);
+  // base: laser rails outside the BT lanes, dark lanes with separators
+  const rail = (x, c) => { const gr = tg.createLinearGradient(0, 0, 0, TEX_H); gr.addColorStop(0, c + '10'); gr.addColorStop(1, c + '55'); tg.fillStyle = gr; tg.fillRect(x, 0, 40, TEX_H); };
+  rail(OFF_X + 4, '#1aa6ff'); rail(OFF_X + 212, '#ff2fb0');
+  tg.fillStyle = '#0d0f1c'; tg.fillRect(OFF_X + 44, 0, 168, TEX_H);
+  tg.fillStyle = '#ffffff'; tg.fillRect(OFF_X + 42, 0, 2, TEX_H); tg.fillRect(OFF_X + 212, 0, 2, TEX_H);
+  tg.fillStyle = '#3a4060'; for (let i = 1; i < 4; i++) tg.fillRect(OFF_X + 43 + 42 * i, 0, 1, TEX_H);
+  // bar lines
+  const m0 = Math.max(0, pulseToMeasure(Math.max(0, cur)) - 1);
+  tg.fillStyle = 'rgb(110,110,110)';
+  for (let m = m0; m <= measureCount; m++) { const y = Y(measureToPulse(m)); if (y >= -20 && y < TEX_H) tg.fillRect(OFF_X + 32, y - 2, 192, 4); }
+  if (centerSplit) {
+    baseCopy.getContext('2d').clearRect(0, 0, TEX_W, TEX_H); baseCopy.getContext('2d').drawImage(tex, 0, 0);
+    tg.clearRect(0, 0, TEX_W, TEX_H);
+    tg.drawImage(baseCopy, OFF_X, 0, 128, TEX_H, OFF_X - centerSplit, 0, 128, TEX_H);
+    tg.drawImage(baseCopy, OFF_X + 128, 0, 128, TEX_H, OFF_X + 128 + centerSplit, 0, 128, TEX_H);
+  }
+  // key beams
+  for (let i = 0; i < 6; i++) if (flash[i] > 0) {
+    const x = i < 4 ? laneX('bt', i) : laneX('fx', i - 4), w = i < 4 ? 40 : 82;
+    const gr = tg.createLinearGradient(0, JDG_Y - 300, 0, JDG_Y); gr.addColorStop(0, '#ffffff00');
+    gr.addColorStop(1, i < 4 ? `rgba(160,200,255,${flash[i] * 0.5})` : `rgba(255,160,60,${flash[i] * 0.5})`);
+    tg.fillStyle = gr; tg.fillRect(x, JDG_Y - 300, w, 300);
+  }
+  // long notes, then chips (FX under BT)
+  for (const kind of ['fx', 'bt']) for (const n of notes) if (n.kind === kind && n.long && visible(n.y0, n.y1)) {
+    const x = laneX(kind, n.lane), top = Math.max(-10, Math.min(Y(n.y1), Y(n.y0))), bottom = Math.min(TEX_H, Math.max(Y(n.y1), Y(n.y0)));
+    tg.fillStyle = kind === 'fx' ? 'rgba(255,150,40,0.75)' : 'rgba(235,240,255,0.85)';
+    tg.fillRect(x, top, kind === 'fx' ? 82 : 40, bottom - top);
+    tg.fillStyle = kind === 'fx' ? '#ffd074' : '#ffffff';
+    tg.fillRect(x + 2, top, 2, bottom - top); tg.fillRect(x + (kind === 'fx' ? 78 : 36), top, 2, bottom - top);
+    tg.fillRect(x, Y(n.y0) - 7, kind === 'fx' ? 82 : 40, 7);
+  }
+  for (const kind of ['fx', 'bt']) for (const n of notes) if (n.kind === kind && !n.long && visible(n.y0, n.y0)) {
+    const y = Y(n.y0), h = chipH(y), x = laneX(kind, n.lane);
+    tg.fillStyle = kind === 'fx' ? '#ff9a2e' : '#f6f8ff'; tg.fillRect(x, y - h / 2, kind === 'fx' ? 82 : 40, h);
+    tg.fillStyle = kind === 'fx' ? '#ffd29a' : '#ffffff'; tg.fillRect(x + 2, y - h / 2, kind === 'fx' ? 78 : 36, 3);
+    tg.fillStyle = kind === 'fx' ? '#8b411d' : '#7d879c'; tg.fillRect(x + 2, y + h / 2 - 3, kind === 'fx' ? 78 : 36, 3);
+  }
+  // after kshootmania/src/MusicGame/Graphics/Highway/Note/LaserNoteGraphics.cpp (ksm-v2, MIT).
+  // Lasers (additive, like the v2 renderer); a slam pushes the rest of the section up by its height
+  tg.globalCompositeOperation = 'lighter';
+  const laserHeight = (y, len, max) => {
+    const raw = Math.trunc(scroll.distance(y, y + len) * ppp), hs = bpmAtPulse(y) * (+$('hispeed').value * 100) / stdBpm * Math.abs(graphAt(scroll.graph, y, 1));
+    return Math.sign(raw) * clamp(Math.abs(raw), max * Math.min(hs, 750) / 750, max);
+  };
+  for (const l of lasers) {
+    const p = l.pts; if (!visible(p[0].y, p.at(-1).y + 120)) continue;
+    tg.fillStyle = l.side ? 'rgba(255,40,170,0.72)' : 'rgba(20,150,255,0.72)';
+    const quad = (x0, y0, x1, y1) => {
+      tg.beginPath(); tg.moveTo(x0 - 24, y0); tg.lineTo(x0 + 24, y0); tg.lineTo(x1 + 24, y1); tg.lineTo(x1 - 24, y1); tg.closePath(); tg.fill();
+      tg.strokeStyle = l.side ? '#ff80df' : '#80d8ff'; tg.lineWidth = 2;
+      tg.beginPath(); tg.moveTo(x0 - 23, y0); tg.lineTo(x1 - 23, y1); tg.moveTo(x0 + 23, y0); tg.lineTo(x1 + 23, y1); tg.stroke();
+    };
+    for (let i = 0; i < p.length; i++) {
+      const y = Y(p[i].y) - 6, slam = p[i].a !== p[i].b; let slamH = laserHeight(p[i].y, 30, 48);
+      if (p[i + 1]?.a !== p[i + 1]?.b) { const dist = Y(p[i].y) - Y(p[i + 1].y); if (Math.sign(dist) === Math.sign(slamH) && Math.abs(dist) < Math.abs(slamH)) slamH = dist * 0.8; }
+      const ys = slam ? y - slamH : y;
+      if (slam) { const xa = laserX(p[i].a, l.wide), xb = laserX(p[i].b, l.wide); tg.fillRect(Math.min(xa, xb) - 24, y - slamH, Math.abs(xb - xa) + 48, slamH); }
+      if (i + 1 < p.length) quad(laserX(p[i].b, l.wide), ys, laserX(p[i + 1].a, l.wide), Y(p[i + 1].y) - 6);
+      else if (slam) quad(laserX(p[i].b, l.wide), ys, laserX(p[i].b, l.wide), ys - laserHeight(p[i].y, 60, 80));   // tail
+    }
+  }
+  tg.globalCompositeOperation = 'source-over';
+  return cur;
+}
+function drawFlatLine(t, width, height) {
+  const sy = height / TEX_H, sx = width / TEX_W, left = (W - width) / 2;
+  g.fillStyle = '#ffe9a8'; g.fillRect(left + (OFF_X + 36) * sx, (JDG_Y - 3) * sy, 184 * sx, 6 * sy);
+  for (const l of lasers) { const v = laserValueAt(l, secToPulseApprox(t)); if (v === null) continue;
+    const x = left + laserX(v, l.wide) * sx, y = JDG_Y * sy;
+    g.strokeStyle = l.side ? '#ff4fb8' : '#2fd3ff'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(x, y - 10); g.lineTo(x - 9, y); g.lineTo(x, y + 10); g.lineTo(x + 9, y); g.closePath(); g.stroke();
+  }
+}
+function project(x, y, z, radians, shift, width, height, after = [0, 0, 0]) {
+  x += shift;
+  const c = Math.cos(radians), s = Math.sin(radians), dy = y - 42;
+  const px = x * c + dy * s + after[0], py = 42 - x * s + dy * c + after[1]; z += after[2];
+  const cy = (py - 45) * Math.cos(Math.PI / 12) + (z + 366) * Math.sin(Math.PI / 12);
+  const cz = -(py - 45) * Math.sin(Math.PI / 12) + (z + 366) * Math.cos(Math.PI / 12);
+  const fy = 1 / Math.tan(Math.PI / 8);
+  return [px * fy / (width / height), cy * fy, cz];
+}
+// after kshootmania/src/MusicGame/Graphics/Jdgline/Jdgline3DGraphics.cpp and LaserCursor3DGraphics.cpp (ksm-v2, MIT).
+function drawJdg(t, cam) {
+  jdg.width = cv3.width; jdg.height = cv3.height;
+  const width = jdg.width, height = jdg.height, h = 936 * 13 / 20;
+  const scale = jdgScale(cam.zoom_bottom, cam.legacy), overlay = jdgScale(cam.zoom_bottom, cam.legacy, true);
+  const screen = (x, y, z, angle, shift, after) => { const p = project(x, y, z, angle, shift, width, height, after); return p[2] > 0.1 ? [width / 2 * (1 + p[0] / p[2]), height / 2 * (1 - p[1] / p[2])] : null; };
+  const angle = cam.tilt + (cam.rotation + cam.jdgline) * Math.PI / 180;
+  const a = screen(-344 / 16 * scale, 0, 0, angle, cam.shift * overlay, [0, 2.6, -h / 2 - 0.4]);
+  const b = screen(344 / 16 * scale, 0, 0, angle, cam.shift * overlay, [0, 2.6, -h / 2 - 0.4]);
+  if (a && b) { jg.strokeStyle = '#ffe9a8'; jg.lineWidth = Math.max(2, 3 * scale * (devicePixelRatio || 1)); jg.shadowColor = '#ffd474'; jg.shadowBlur = 8; jg.beginPath(); jg.moveTo(...a); jg.lineTo(...b); jg.stroke(); jg.shadowBlur = 0; }
+  for (const l of lasers) {
+    const v = laserValueAt(l, secToPulseApprox(t)); if (v === null) continue;
+    const p = screen((v - 0.5) * 282 / 8 * (l.wide ? 2 : 1) * overlay, 3.5, -h / 2 - 1.8, cam.tilt + (cam.rotation + cam.highway) * Math.PI / 180, cam.shift * overlay);
+    if (!p) continue;
+    const size = 9 * (devicePixelRatio || 1) * Math.min(5, Math.max(0.1, scale));
+    jg.strokeStyle = l.side ? '#ff4fb8' : '#2fd3ff'; jg.lineWidth = 2 * (devicePixelRatio || 1); jg.fillStyle = '#ffffffb0';
+    jg.beginPath(); jg.moveTo(p[0], p[1] - size); jg.lineTo(p[0] - size, p[1]); jg.lineTo(p[0], p[1] + size); jg.lineTo(p[0] + size, p[1]); jg.closePath(); jg.fill(); jg.stroke();
+  }
+}
+
+function draw3d(t) {
+  const r = cv3.getBoundingClientRect(), d = devicePixelRatio || 1;
+  if (cv3.width !== Math.round(r.width * d) || cv3.height !== Math.round(r.height * d)) { cv3.width = Math.round(r.width * d); cv3.height = Math.round(r.height * d); }
+  const cam = cameraAt(t); drawHighwayTexture(t, cam);
+  const corners = highwayCorners(cam), data = [];
+  const th = cam.tilt + (cam.rotation + cam.highway) * Math.PI / 180;
+  for (const [x, y, z, uu, vv] of corners) {
+    const [cx, cy, cz] = project(x, y, z, th, cam.shift, cv3.width, cv3.height);
+    data.push(cx, cy, 0, cz, uu, vv);
+  }
+  gl.viewport(0, 0, cv3.width, cv3.height); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(glProg);
+  gl.bindBuffer(gl.ARRAY_BUFFER, glBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.DYNAMIC_DRAW);
+  const aClip = gl.getAttribLocation(glProg, 'clip'), aUv = gl.getAttribLocation(glProg, 'uv');
+  gl.enableVertexAttribArray(aClip); gl.vertexAttribPointer(aClip, 4, gl.FLOAT, false, 24, 0);
+  gl.enableVertexAttribArray(aUv); gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 24, 16);
+  gl.bindTexture(gl.TEXTURE_2D, glTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, tex); gl.generateMipmap(gl.TEXTURE_2D);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  drawJdg(t, cam);
+}
+resize(); animation = requestAnimationFrame(frame);
+return () => {
+  disposed = true; events.abort(); cancelAnimationFrame(animation); observer.disconnect(); resetSounds();
+  audio.pause(); audio.removeAttribute('src'); audio.load(); ctx?.close();
+  if (gl) { gl.deleteTexture(glTex); gl.deleteBuffer(glBuf); gl.deleteProgram(glProg); }
+};
+}
+</script>
