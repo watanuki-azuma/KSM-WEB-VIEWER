@@ -1,3 +1,4 @@
+const zip = require('./zip.cjs');
 const {chromium} = require('playwright');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -57,6 +58,19 @@ const audioPath = silentWav();
     await page.locator('#start').click();
     await page.waitForTimeout(200);
     await page.locator('#play').click();
+    // ZIP song folder: WAV content uses the chart's original Gram.ogg filename.
+    const zipPath = path.join(path.dirname(audioPath), 'song.zip');
+    fs.writeFileSync(zipPath, zip(['Gram_ex.ksh','Gram_ch.ksh'].map(name => ({name:'song/' + name,
+      data:fs.readFileSync(path.join(__dirname,'fixtures/libkson',name)),method:8})).concat([
+      {name:'song/Gram.ogg',data:fs.readFileSync(audioPath),method:8}])));
+    await page.locator('#files').setInputFiles(zipPath);
+    await page.waitForFunction(() => document.querySelector('#title').textContent === 'Gram' && document.querySelector('#level').textContent === '16');
+    assert.equal(await page.locator('#chart-select').isVisible(), true);
+    assert.equal(await page.locator('#chart-select option').count(), 2);
+    assert.match(await page.locator('#open-status').textContent(), /Gram.ogg/);
+    await page.locator('#chart-select').selectOption('1');
+    await page.waitForFunction(() => document.querySelector('#level').textContent === '13');
+    assert.match(await page.locator('#open-status').textContent(), /Gram.ogg/);
     // Exercise every procedural slam variant in real WebAudio, including a silent mute.
     await page.evaluate(() => {
       window.slamStarts = 0;
@@ -89,5 +103,5 @@ const audioPath = silentWav();
     await frame.locator('#play').click();
     assert.deepEqual(errors, []);
     assert.deepEqual(requests, []);
-  } finally { await browser.close(); }
+  } finally { await browser.close(); fs.rmSync(path.dirname(audioPath), {recursive:true,force:true}); }
 })().catch(e => { console.error(e); process.exit(1); });

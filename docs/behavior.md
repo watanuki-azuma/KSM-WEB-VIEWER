@@ -1,5 +1,12 @@
 # Viewer behavior
 
+ZIP はファイル選択・ドロップの両方で開ける。中央ディレクトリとローカルヘッダーから
+非圧縮 / deflate の譜面・音源だけを展開し、ZIP 内のパスで音源を照合する。ファイル名は
+UTF-8 フラグがあれば UTF-8、それ以外は厳密な UTF-8 を試してから Shift-JIS で読む。
+暗号化・未対応方式・ディレクトリ・入れ子 ZIP・画像・動画は読み飛ばし、ZIP64 はエラーにする。
+複数譜面はタイトル・難易度名・レベルの選択欄で切り替える。初期選択は難易度番号、次に
+レベルの大きい譜面。切り替えると再生を停止して音源を再照合する。単一譜面では選択欄を隠す。
+
 The page is self-contained. It starts with a file picker; `ksmauto preview` embeds the chart and optional audio. Open KSON/KSH and audio in either
 order, together, or by dropping a folder. Audio is matched against
 `audio.bgm.filename`, with a fallback when there is only one audio file. Opening

@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import zip from './zip.cjs';
 
 const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-const core = vm.runInNewContext(html.match(/<script id="viewer-core">([\s\S]*?)<\/script>/)[1] + '\n({curveAt, graphAt, tiltAt, newTilt, stepTilt, patternAt, slamShake, highwayCorners, scrollMap, expandGraph, laserValueAt, effectiveStdBpm, laserSlamEvents})');
+const core = vm.runInNewContext(html.match(/<script id="viewer-core">([\s\S]*?)<\/script>/)[1] + '\n({curveAt, graphAt, tiltAt, newTilt, stepTilt, patternAt, slamShake, highwayCorners, scrollMap, expandGraph, laserValueAt, effectiveStdBpm, laserSlamEvents, readZip})', {TextDecoder, File, Blob, Response, DecompressionStream});
 const close = (a, b, eps = 1e-8) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
 const laser = (side, points) => ({side, graph: points, pts: points.map(([y, v]) => ({y, a: Array.isArray(v) ? v[0] : v, b: Array.isArray(v) ? v[1] : v}))});
 
@@ -131,7 +132,7 @@ function viewerPage(chart = null) {
   }, {get: (obj, key) => obj[key] ?? (() => ({}))});
   const element = id => {
     if (!elements.has(id)) elements.set(id, {value: ({view:'3d',rate:'1',hispeed:'6.5',vis:'0',seek:'0'})[id] || '', checked:id === 'slam',
-      style:{}, textContent:'', disabled:false, hidden:false, append() {}, replaceChildren() {},
+      style:{}, textContent:'', disabled:false, hidden:false, children:[], append(child) { this.children.push(child); }, replaceChildren() { this.children = []; },
       getContext: kind => kind === 'webgl' ? gl : drawing,
       getBoundingClientRect: () => ({width:560,height:680})});
     return elements.get(id);
@@ -166,11 +167,11 @@ function viewerPage(chart = null) {
   }
   element('chart-data').textContent = JSON.stringify(chart);
   element('fx-worklet').textContent = html.match(/<script id="fx-worklet" type="text\/plain">([\s\S]*?)<\/script>/)[1];
-  const context = vm.createContext({console, Audio, AudioContext, AudioWorkletNode, AbortController, TextDecoder, URL, Blob, devicePixelRatio:1,
+  const context = vm.createContext({console, Audio, AudioContext, AudioWorkletNode, AbortController, TextDecoder, URL, Blob, File, Response, DecompressionStream, devicePixelRatio:1,
     performance: {now: () => ms}, localStorage: {getItem: () => null, setItem() {}},
     matchMedia: () => ({matches:false}), ResizeObserver: class {observe() {} disconnect() {}},
     requestAnimationFrame: fn => { frames.set(++serial, fn); return serial; }, cancelAnimationFrame: id => frames.delete(id),
-    document: {getElementById:element, createElement:element, addEventListener() {}, body:{classList:{add() {},remove() {}}}},
+    document: {getElementById:element, createElement:tag => tag === 'option' ? {} : element(tag), addEventListener() {}, body:{classList:{add() {},remove() {}}}},
   });
   for (const id of ['ksh-converter','viewer-core']) vm.runInContext(html.match(new RegExp(`<script id="${id}">([\\s\\S]*?)<\\/script>`))[1], context);
   vm.runInContext(html.match(/<script>\n([\s\S]*?)<\/script>/)[1].replace('__AUDIO_SRC__',''), context);
@@ -272,4 +273,50 @@ test('KSH file input path and folder-relative audio match with multiple audio fi
   page.element('seek').oninput({target:{value:'0.5'}}); await page.frame();
   page.element('seek').oninput({target:{value:'0'}}); await page.frame();
   assert.deepEqual(page.uploads.at(-1), before, 'seeking restores the same camera pose');
+});
+
+
+test('ZIP stored/deflate, UTF-8 flag/fallback, Shift-JIS, comments and skipped entries', async () => {
+  const sjis = Buffer.concat([Buffer.from('song/'), Buffer.from([0x93,0xfa,0x96,0x7b]), Buffer.from('.ksh')]);
+  const bytes = zip([{name:'song/譜面.kson',data:'chart',method:8}, {name:sjis,flags:0,data:'sjis'},
+    {name:'song/音.wav',flags:0,data:'audio'}, {name:'song/pic.jpg',data:'image',method:8},
+    {name:'nested.zip',data:'zip'}, {name:'dir.ksh/',data:''}, {name:'secret.ksh',flags:1}, {name:'unsupported.ksh',method:99}], 'comment PK\x05\x06');
+  const files = await core.readZip(new File([bytes], 'song.zip'));
+  assert.deepEqual(Array.from(files, f => f.viewerPath), ['song/譜面.kson','song/日本.ksh','song/音.wav']);
+  assert.deepEqual(await Promise.all(Array.from(files, f => f.text())), ['chart','sjis','audio']);
+  assert.ok(files.every(f => f instanceof File));
+  const invalid = zip([{name:Buffer.from([0xff,46,107,115,104]),flags:0x800}]);
+  await assert.rejects(core.readZip(new File([invalid],'bad.zip')));
+  const large = zip([]); large.writeUInt16LE(65535,10);
+  await assert.rejects(core.readZip(new File([large],'large.zip')), /ZIP64/);
+  await assert.rejects(core.readZip(new File(['bad'],'bad.zip')), /ZIP/);
+  const broken = zip([{name:'a.ksh',data:'x'}]); broken.writeUInt32LE(0,0);
+  await assert.rejects(core.readZip(new File([broken],'bad.zip')), /ZIP/);
+});
+
+test('multiple charts default by difficulty then level and switch with relative audio', async () => {
+  const page = viewerPage();
+  const entry = (name, difficulty, level, title) => {
+    const chart = sample(); Object.assign(chart.meta,{difficulty,level,title}); chart.audio.bgm.filename = '../audio/song.wav';
+    return {name, data:JSON.stringify(chart),method:8};
+  };
+  await page.open([new File([zip([entry('charts/a.kson',1,19,'Low'),entry('charts/b.kson',2,15,'High'),
+    entry('charts/c.kson',2,16,'Highest'),{name:'audio/song.wav',data:'audio'}])],'song.zip')]);
+  assert.equal(page.element('title').textContent,'Highest'); assert.equal(page.element('chart-select').hidden,false);
+  assert.equal(page.element('chart-select').value,'2');
+  assert.deepEqual(page.element('chart-select').children.map(o => o.textContent), ['Low · CHALLENGE · 19','High · EXTENDED · 15','Highest · EXTENDED · 16']);
+  await page.element('chart-select').onchange({target:{value:'0'}});
+  assert.equal(page.element('title').textContent,'Low'); assert.match(page.element('open-status').textContent,/song.wav/);
+  await page.open([new File([JSON.stringify(sample())],'single.kson')]); assert.equal(page.element('chart-select').hidden,true);
+});
+
+
+test('zipped libkson difficulties mount and switch with original audio filename', async () => {
+  const page = viewerPage(), entries = ['Gram_ex.ksh','Gram_ch.ksh'].map(name => ({name:'song/' + name,
+    data:fs.readFileSync(new URL('./fixtures/libkson/' + name, import.meta.url)), method:8}));
+  await page.open([new File([zip([...entries,{name:'song/Gram.ogg',data:'audio',method:8}])],'Gram.zip')]);
+  assert.equal(page.element('title').textContent,'Gram'); assert.equal(page.element('level').textContent,16);
+  assert.equal(page.element('chart-select').children.length,2); assert.match(page.element('open-status').textContent,/Gram.ogg/);
+  await page.element('chart-select').onchange({target:{value:'1'}});
+  assert.equal(page.element('level').textContent,13); assert.match(page.element('open-status').textContent,/Gram.ogg/);
 });
